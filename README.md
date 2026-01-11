@@ -123,7 +123,7 @@ npx tsx bot-with-dashboard.ts
 ### What happens next?
 1.  The terminal will show startup logs.
 2.  It will verify your wallet connection.
-3.  **The Dashboard will open automatically in your browser** at `http://localhost:5173`.
+3.  **The Dashboard will open automatically in your browser** at `http://localhost:3001`.
 
 If it doesn't open, just click that link.
 
