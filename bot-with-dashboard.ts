@@ -900,7 +900,7 @@ async function main() {
 
   // Start Dashboard Server
   startDashboard(3001);
-  console.log('\n🌐 Dashboard: http://localhost:5173\n');
+  console.log('\n🌐 Dashboard: http://localhost:3001\n');
 
   if (!process.env.POLYMARKET_PRIVATE_KEY) {
     log('ERROR', 'POLYMARKET_PRIVATE_KEY not found');
