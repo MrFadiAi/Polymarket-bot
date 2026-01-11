@@ -564,12 +564,29 @@ export class DipArbService extends EventEmitter {
       // 计算拆分订单参数
       const splitCount = Math.max(1, this.config.splitOrders);
 
-      // 机制保证：确保满足 $1 最低限额
-      const minSharesForMinAmount = Math.ceil(1 / signal.targetPrice);
-      const adjustedShares = Math.max(signal.shares, minSharesForMinAmount);
+      // 🔴 FIXED: Enforce minimum trade value to ensure exit capability
+      const MIN_TRADE_VALUE = 1.5;  // $1.50 (50% buffer above Polymarket's $1 minimum)
+      const minSharesForMinValue = Math.ceil(MIN_TRADE_VALUE / signal.targetPrice);
+      const adjustedShares = Math.max(signal.shares, minSharesForMinValue);
+
+      // Calculate total trade value
+      const totalTradeValue = adjustedShares * signal.targetPrice;
+
+      // Reject if still below minimum (should never happen after adjustment, but safety check)
+      if (totalTradeValue < MIN_TRADE_VALUE) {
+        this.log(`❌ Trade value $${totalTradeValue.toFixed(2)} below minimum $${MIN_TRADE_VALUE}`);
+        this.log(`   Price: ${signal.targetPrice.toFixed(4)}, Shares: ${adjustedShares}`);
+        return {
+          success: false,
+          leg: 'leg1',
+          roundId: signal.roundId,
+          error: `Trade value $${totalTradeValue.toFixed(2)} below minimum $${MIN_TRADE_VALUE} - cannot guarantee exit`,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
 
       if (adjustedShares > signal.shares) {
-        this.log(`📊 Shares adjusted: ${signal.shares} → ${adjustedShares} (to meet $1 minimum at price ${signal.targetPrice.toFixed(4)})`);
+        this.log(`📊 Shares adjusted: ${signal.shares} → ${adjustedShares} (to meet $${MIN_TRADE_VALUE} minimum at price ${signal.targetPrice.toFixed(4)})`);
       }
 
       const sharesPerOrder = adjustedShares / splitCount;
