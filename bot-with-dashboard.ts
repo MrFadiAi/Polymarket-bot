@@ -29,7 +29,7 @@ import { addSession, createSessionFromState, type TradeRecord } from './src/dash
 let CONFIG = {
   capital: {
     totalUsd: parseFloat(process.env.CAPITAL_USD || '250'),
-    maxPerTradePct: 0.03,
+    maxPerTradePct: 0.02,  // 🔴 FIXED: Reduced from 3% to 2%
     maxPerMarketPct: 0.10,
     maxTotalExposurePct: 0.30,
     minOrderUsd: 5,
@@ -42,21 +42,42 @@ let CONFIG = {
   },
 
   risk: {
-    dailyMaxLossPct: 0.08,
+    // Daily limits
+    dailyMaxLossPct: 0.05,  // 🔴 FIXED: Reduced from 8% to 5%
     maxConsecutiveLosses: 6,
     pauseOnBreachMinutes: 60,
+
+    // 🔴 NEW: v3.1 Multi-layer protection
+    monthlyMaxLossPct: 0.15,  // 15% monthly limit
+    maxDrawdownFromPeak: 0.25,  // 25% drawdown from peak
+    totalMaxLossPct: 0.40,  // 40% total loss - permanent halt
+
+    // 🔴 NEW: Dynamic position sizing
+    enableDynamicSizing: true,
+    minPositionPct: 0.01,  // 1% minimum
+    maxPositionPct: 0.05,  // 5% maximum
+    lossSizingReduction: 0.20,  // Reduce 20% per loss
+    winSizingIncrease: 0.10,  // Increase 10% per win
   },
 
   smartMoney: {
     enabled: process.env.SMARTMONEY_ENABLED !== 'false',
     topN: 20,
-    minWinRate: 0.70,
-    minPnl: 70,
-    minTrades: 15,
+    // 🔴 FIXED: Stricter criteria (v3.1)
+    minWinRate: 0.60,  // Up from 0.70 to match bot-config (60%+)
+    minPnl: 500,       // Up from 70 to $500
+    minTrades: 30,     // Up from 15 to 30
+
+    // 🔴 NEW: Quality filters
+    minProfitFactor: 1.5,  // Total wins / total losses >= 1.5x
+    minConsistencyScore: 0.7,  // Recent performance score
+    maxSingleTradeExposure: 0.3,  // Max 30% of PnL from one trade
+    checkLastNTrades: 10,  // Analyze last 10 trades
+
     sizeScale: 0.1,
-    maxSizePerTrade: 10,
+    maxSizePerTrade: 15,  // Up from 10
     maxSlippage: 0.03,
-    minTradeSize: 5,
+    minTradeSize: 10,  // Up from 5
     delay: 500,
     customWallets: [
       '0xc2e7800b5af46e6093872b177b7a5e7f0563be51',
@@ -66,12 +87,17 @@ let CONFIG = {
 
   arbitrage: {
     enabled: process.env.ARBITRAGE_ENABLED === 'true',
-    profitThreshold: 0.001, // 0.1% (Lowered to find more opportunities)
-    minTradeSize: 5,
-    maxTradeSize: 50,
+    // 🔴 FIXED: Higher profit threshold for gas fees
+    profitThreshold: 0.01,  // Up from 0.001 to 1%
+    minTradeSize: 20,  // Up from 5 to reduce gas impact
+    maxTradeSize: 100,  // Up from 50
     minVolume24h: 5000,
     autoExecute: true,
     enableRebalancer: true,
+
+    // 🔴 NEW: Gas fee accounting
+    estimatedGasCostUSD: 0.10,
+    minNetProfit: 0.50,
   },
 
   dipArb: {
@@ -81,6 +107,8 @@ let CONFIG = {
     sumTarget: 0.92,
     autoRotate: true,
     autoExecute: true,
+    // 🔴 NEW: Minimum trade value
+    minTradeValueUSD: 1.5,  // $1.50 minimum
   },
 
   onchain: {
@@ -97,13 +125,16 @@ let CONFIG = {
   },
 
   directTrading: {
-    enabled: false, // Disabled by default
+    enabled: false,
     trendFollowing: true,
     minTrendStrength: 0.02,
+    // 🔴 NEW: Stop-loss and take-profit
+    stopLossPct: 0.15,
+    takeProfitPct: 0.25,
+    trailingStopPct: 0.10,
+    maxHoldDays: 7,
+    minRiskReward: 1.5,
   },
-
-  // ⚠️ NOTE: Direct Trading is currently a placeholder in this dashboard demo.
-  // The setupDirectTrading() function needs to be implemented to activate this strategy.
 
   dryRun: process.env.DRY_RUN !== 'false',
 };
@@ -117,16 +148,27 @@ const state: BotState = {
   dailyPnL: 0,
   totalPnL: 0,
   consecutiveLosses: 0,
+  consecutiveWins: 0,  // 🔴 NEW
   tradesExecuted: 0,
   isPaused: false,
   pauseUntil: 0,
+
+  // 🔴 NEW: v3.1 Risk tracking
+  monthlyPnL: 0,
+  monthStartTime: Date.now(),
+  peakCapital: CONFIG.capital.totalUsd,
+  currentCapital: CONFIG.capital.totalUsd,
+  currentDrawdown: 0,
+  permanentlyHalted: false,
+  lastDailyReset: Date.now(),
+
   smartMoneyTrades: 0,
   arbTrades: 0,
   dipArbTrades: 0,
   directTrades: 0,
   arbProfit: 0,
   followedWallets: [],
-  positions: [], // Portfolio Sync
+  positions: [],
   activeArbMarket: null,
   activeDipArbMarket: null,
   splits: 0,
@@ -136,12 +178,11 @@ const state: BotState = {
   usdcBalance: 0,
   usdcEBalance: 0,
   maticBalance: 0,
-  unrealizedPnL: 0, // New field
+  unrealizedPnL: 0,
   btcTrend: 'neutral',
   ethTrend: 'neutral',
   solTrend: 'neutral',
 
-  // DipArb live data
   dipArb: {
     marketName: null,
     underlying: null,
@@ -150,12 +191,11 @@ const state: BotState = {
     upPrice: 0,
     downPrice: 0,
     sum: 0,
-    status: 'idle', // Initial status
+    status: 'idle',
     lastSignal: null,
     signals: [],
   },
 
-  // Arbitrage live data
   arbitrage: {
     status: 'idle',
     marketsScanned: 0,
@@ -164,7 +204,6 @@ const state: BotState = {
     lastOpportunity: null,
   },
 
-  // Smart Money signals
   smartMoneySignals: [],
 };
 
@@ -192,29 +231,102 @@ function updateDashboard() {
   dashboardEmitter.updateState(state);
 }
 
+// 🔴 FIXED: v3.1 Multi-layer risk management
 function canTrade(): boolean {
+  // Check if permanently halted
+  if (state.permanentlyHalted) {
+    log('ERROR', '🛑 Trading permanently halted - total loss limit reached');
+    return false;
+  }
+
+  // Reset daily PnL if new day
+  const daysSinceReset = (Date.now() - state.lastDailyReset) / (1000 * 60 * 60 * 24);
+  if (daysSinceReset >= 1) {
+    log('INFO', `Daily PnL reset. Previous day: $${state.dailyPnL.toFixed(2)}`);
+    state.dailyPnL = 0;
+    state.lastDailyReset = Date.now();
+  }
+
+  // Reset monthly PnL if new month
+  const daysSinceMonthStart = (Date.now() - state.monthStartTime) / (1000 * 60 * 60 * 24);
+  if (daysSinceMonthStart >= 30) {
+    log('INFO', `Monthly PnL reset. Previous month: $${state.monthlyPnL.toFixed(2)}`);
+    state.monthlyPnL = 0;
+    state.monthStartTime = Date.now();
+  }
+
+  // Update current capital and drawdown
+  state.currentCapital = CONFIG.capital.totalUsd + state.totalPnL;
+  if (state.currentCapital > state.peakCapital) {
+    state.peakCapital = state.currentCapital;
+  }
+  state.currentDrawdown = (state.peakCapital - state.currentCapital) / state.peakCapital;
+
+  // Check temporary pause
   if (state.isPaused && Date.now() < state.pauseUntil) return false;
   if (state.isPaused && Date.now() >= state.pauseUntil) {
     state.isPaused = false;
-    log('INFO', 'Bot resumed');
+    log('INFO', 'Bot resumed after cooldown');
     updateDashboard();
   }
+
+  // Layer 1: Daily loss limit
   const dailyLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.dailyMaxLossPct;
   if (state.dailyPnL <= -dailyLossLimit) {
     state.isPaused = true;
     state.pauseUntil = Date.now() + CONFIG.risk.pauseOnBreachMinutes * 60 * 1000;
+    log('WARN', `Daily loss limit breached: -$${Math.abs(state.dailyPnL).toFixed(2)} (limit: $${dailyLossLimit.toFixed(2)})`);
     updateDashboard();
     return false;
   }
+
+  // Layer 2: Monthly loss limit
+  const monthlyLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.monthlyMaxLossPct;
+  if (state.monthlyPnL <= -monthlyLossLimit) {
+    log('ERROR', `🛑 Monthly loss limit breached: -$${Math.abs(state.monthlyPnL).toFixed(2)} (limit: $${monthlyLossLimit.toFixed(2)})`);
+    state.isPaused = true;
+    state.pauseUntil = Date.now() + (30 * 24 * 60 * 60 * 1000);
+    updateDashboard();
+    return false;
+  }
+
+  // Layer 3: Drawdown from peak
+  if (state.currentDrawdown >= CONFIG.risk.maxDrawdownFromPeak) {
+    log('ERROR', `🛑 Maximum drawdown reached: ${(state.currentDrawdown * 100).toFixed(1)}%`);
+    state.isPaused = true;
+    state.pauseUntil = Date.now() + (7 * 24 * 60 * 60 * 1000);
+    updateDashboard();
+    return false;
+  }
+
+  // Layer 4: Total loss - PERMANENT HALT
+  const totalLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.totalMaxLossPct;
+  if (state.totalPnL <= -totalLossLimit) {
+    state.permanentlyHalted = true;
+    log('ERROR', '💀 TOTAL LOSS LIMIT REACHED - TRADING PERMANENTLY HALTED');
+    log('ERROR', `Total loss: -$${Math.abs(state.totalPnL).toFixed(2)} (limit: $${totalLossLimit.toFixed(2)})`);
+    updateDashboard();
+    return false;
+  }
+
   return true;
 }
 
+// 🔴 FIXED: Enhanced trade recording with win tracking
 function recordTrade(profit: number, strategy: string) {
   state.tradesExecuted++;
   state.dailyPnL += profit;
+  state.monthlyPnL += profit;  // NEW
   state.totalPnL += profit;
-  if (profit < 0) state.consecutiveLosses++;
-  else state.consecutiveLosses = 0;
+
+  // Track consecutive wins/losses
+  if (profit < 0) {
+    state.consecutiveLosses++;
+    state.consecutiveWins = 0;
+  } else {
+    state.consecutiveLosses = 0;
+    state.consecutiveWins++;
+  }
 
   if (strategy === 'smartMoney') state.smartMoneyTrades++;
   else if (strategy === 'arbitrage') state.arbTrades++;

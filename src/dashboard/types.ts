@@ -7,9 +7,19 @@ export interface BotState {
   dailyPnL: number;
   totalPnL: number;
   consecutiveLosses: number;
+  consecutiveWins: number;  // 🔴 NEW v3.1
   tradesExecuted: number;
   isPaused: boolean;
   pauseUntil: number;
+
+  // 🔴 NEW v3.1: Enhanced risk tracking
+  monthlyPnL: number;
+  monthStartTime: number;
+  peakCapital: number;
+  currentCapital: number;
+  currentDrawdown: number;
+  permanentlyHalted: boolean;
+  lastDailyReset: number;
 
   // Strategy stats
   smartMoneyTrades: number;
