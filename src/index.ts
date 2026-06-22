@@ -156,6 +156,16 @@ export {
   categorizeMarket,
   CATEGORY_KEYWORDS,
 } from './services/smart-money-service.js';
+
+// LeaderboardProvider - optional enriched smart-money source (e.g. Monid)
+export { MonidLeaderboardProvider } from './services/monid-leaderboard-provider.js';
+export type { MonidProviderOptions, FetchLike } from './services/monid-leaderboard-provider.js';
+export type {
+  LeaderboardProvider,
+  LeaderboardQuery,
+  SmartMoneyLeaderboardRow,
+} from './services/leaderboard-provider.js';
+export { applyMetricFilters } from './services/leaderboard-provider.js';
 export type {
   SmartMoneyWallet,
   SmartMoneyTrade,
