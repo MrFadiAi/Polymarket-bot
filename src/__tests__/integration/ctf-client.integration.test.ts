@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CTF Client Integration Tests
  *
  * These tests verify the CTF (Conditional Token Framework) implementation
@@ -25,7 +25,7 @@ import {
 } from '../../clients/ctf-client.js';
 
 // Public RPC for read-only tests
-const POLYGON_RPC = 'https://polygon-rpc.com';
+const POLYGON_RPC = 'https://polygon-bor-rpc.publicnode.com';
 
 // Known addresses and markets for testing
 const KNOWN_WHALE_ADDRESS = '0x82a1b239c1ff9bc60a4c86caf5b6bdbd9fddfe20'; // Top trader
@@ -46,7 +46,10 @@ const ERC20_ABI = [
 ];
 
 describe('CTF Contract Verification', () => {
-  const provider = new ethers.providers.JsonRpcProvider(POLYGON_RPC);
+  const provider = new ethers.providers.StaticJsonRpcProvider(POLYGON_RPC, {
+  chainId: 137,
+  name: 'matic',
+});
 
   describe('Contract Addresses', () => {
     it('should verify CTF contract is deployed and accessible', async () => {
@@ -60,7 +63,7 @@ describe('CTF Contract Verification', () => {
       // Should return 0 for non-existent/unresolved condition
       expect(denominator.toNumber()).toBe(0);
 
-      console.log(`✓ CTF Contract verified at ${CTF_CONTRACT}`);
+      console.log(`âœ“ CTF Contract verified at ${CTF_CONTRACT}`);
     }, 30000);
 
     it('should verify USDC contract is deployed', async () => {
@@ -74,7 +77,7 @@ describe('CTF Contract Verification', () => {
       expect(decimals).toBe(USDC_DECIMALS);
       expect(symbol).toBe('USDC');
 
-      console.log(`✓ USDC Contract verified at ${USDC_CONTRACT}`);
+      console.log(`âœ“ USDC Contract verified at ${USDC_CONTRACT}`);
       console.log(`  Symbol: ${symbol}, Decimals: ${decimals}`);
     }, 30000);
 
@@ -87,7 +90,7 @@ describe('CTF Contract Verification', () => {
       expect(code).not.toBe('0x');
       expect(code.length).toBeGreaterThan(10);
 
-      console.log(`✓ Second CTF Contract verified at ${SECOND_CTF_CONTRACT}`);
+      console.log(`âœ“ Second CTF Contract verified at ${SECOND_CTF_CONTRACT}`);
       console.log(`  Contract code size: ${(code.length - 2) / 2} bytes`);
       console.log('  Note: This is the NegRisk CTF contract (different ABI from standard CTF)');
     }, 30000);
@@ -99,7 +102,7 @@ describe('CTF Contract Verification', () => {
       expect(code).not.toBe('0x');
       expect(code.length).toBeGreaterThan(10);
 
-      console.log(`✓ NegRisk Adapter verified at ${NEG_RISK_ADAPTER}`);
+      console.log(`âœ“ NegRisk Adapter verified at ${NEG_RISK_ADAPTER}`);
       console.log(`  Contract code size: ${(code.length - 2) / 2} bytes`);
     }, 30000);
 
@@ -109,7 +112,7 @@ describe('CTF Contract Verification', () => {
       expect(code).not.toBe('0x');
       expect(code.length).toBeGreaterThan(10);
 
-      console.log(`✓ NegRisk CTF Exchange verified at ${NEG_RISK_CTF_EXCHANGE}`);
+      console.log(`âœ“ NegRisk CTF Exchange verified at ${NEG_RISK_CTF_EXCHANGE}`);
       console.log(`  Contract code size: ${(code.length - 2) / 2} bytes`);
     }, 30000);
   });
@@ -142,7 +145,7 @@ describe('CTF Contract Verification', () => {
       expect(positionId).toMatch(/^0x[a-f0-9]{64}$/);
       expect(collectionId).toMatch(/^0x[a-f0-9]{64}$/);
 
-      console.log('✓ Position ID calculation verified');
+      console.log('âœ“ Position ID calculation verified');
       console.log(`  Condition ID: ${conditionId.slice(0, 20)}...`);
       console.log(`  Collection ID: ${collectionId.slice(0, 20)}...`);
       console.log(`  Position ID: ${positionId.slice(0, 20)}...`);
@@ -182,7 +185,7 @@ describe('CTF Contract Verification', () => {
       expect(yesPositionId).not.toBe(noPositionId);
       expect(yesCollectionId).not.toBe(noCollectionId);
 
-      console.log('✓ YES and NO position IDs are different');
+      console.log('âœ“ YES and NO position IDs are different');
       console.log(`  YES Position ID: ${yesPositionId.slice(0, 20)}...`);
       console.log(`  NO Position ID:  ${noPositionId.slice(0, 20)}...`);
     });
@@ -197,7 +200,7 @@ describe('CTF Contract Verification', () => {
 
       expect(balance.gte(0)).toBe(true);
 
-      console.log(`✓ USDC balance query works`);
+      console.log(`âœ“ USDC balance query works`);
       console.log(`  Whale ${KNOWN_WHALE_ADDRESS.slice(0, 10)}... has ${parseFloat(formattedBalance).toLocaleString()} USDC`);
     }, 30000);
 
@@ -216,7 +219,7 @@ describe('CTF Contract Verification', () => {
 
       expect(balance.gte(0)).toBe(true);
 
-      console.log('✓ CTF balance query works');
+      console.log('âœ“ CTF balance query works');
       console.log(`  Balance for random position: ${ethers.utils.formatUnits(balance, USDC_DECIMALS)}`);
     }, 30000);
   });
@@ -250,7 +253,7 @@ describe('CTF Contract Verification', () => {
 
         const isResolved = denominator.gt(0);
 
-        console.log('✓ Market resolution query works');
+        console.log('âœ“ Market resolution query works');
         console.log(`  Market: "${markets[0].question.slice(0, 40)}..."`);
         console.log(`  Condition ID: ${conditionId.slice(0, 20)}...`);
         console.log(`  Is resolved: ${isResolved}`);
@@ -260,7 +263,7 @@ describe('CTF Contract Verification', () => {
         }
       } catch (error) {
         // Some markets might be NegRisk markets with different contract
-        console.log('✓ Query attempted (market might be NegRisk type)');
+        console.log('âœ“ Query attempted (market might be NegRisk type)');
         console.log(`  Condition ID: ${conditionId.slice(0, 20)}...`);
       }
     }, 30000);
@@ -273,7 +276,7 @@ describe('CTF Contract Verification', () => {
 
       expect(gasPrice.gt(0)).toBe(true);
 
-      console.log('✓ Gas price fetched');
+      console.log('âœ“ Gas price fetched');
       console.log(`  Current gas price: ${parseFloat(gasPriceGwei).toFixed(2)} gwei`);
     }, 30000);
   });
@@ -305,7 +308,7 @@ describe('CTF Architecture Understanding', () => {
      * - Multi-outcome events (elections, sports champions) may use NegRisk
      */
 
-    console.log('✓ CTF Architecture Documented');
+    console.log('âœ“ CTF Architecture Documented');
     console.log('');
     console.log('Standard CTF Contract:');
     console.log(`  ${CTF_CONTRACT}`);
@@ -319,7 +322,7 @@ describe('CTF Architecture Understanding', () => {
     console.log('');
     console.log('NegRisk Adapter:');
     console.log(`  ${NEG_RISK_ADAPTER}`);
-    console.log('  - Handles NO → YES conversions');
+    console.log('  - Handles NO â†’ YES conversions');
     console.log('');
     console.log('NegRisk CTF Exchange:');
     console.log(`  ${NEG_RISK_CTF_EXCHANGE}`);
@@ -329,3 +332,5 @@ describe('CTF Architecture Understanding', () => {
     expect(true).toBe(true);
   });
 });
+
+
