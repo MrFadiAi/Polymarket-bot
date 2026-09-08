@@ -1,4 +1,4 @@
-# 🤖 Polymarket Trading Bot v3.1 - Enhanced Risk Management
+# 🤖 Polymarket Trading Bot v3.2 - Execution Safety & Backtesting
 
 **The Ultimate Open-Source Automated Trading Bot for Polymarket**
 
@@ -6,6 +6,26 @@
 [![Arabic](https://img.shields.io/badge/Language-Arabic-green)](README_AR.md)
 
 **Created by**: [@Mr_CryptoYT](https://x.com/Mr_CryptoYT)
+
+## 🆕 What's New in v3.2 (September 2026)
+
+### 🔧 **Execution Safety — All 13 Known Issues Resolved**
+- ✅ **Fee-aware profits**: Arbitrage and DipArb subtract taker fees + gas and enforce a minimum net-profit gate (no more fee-blind signals)
+- ✅ **Price-protected orders**: Every market order now sends worst-price caps/floors from the live order book — no more uncapped fills
+- ✅ **Sequential arb execution**: YES/NO legs execute one after the other with unwind-on-partial-fill and residual reconciliation (no more dual-order race)
+- ✅ **Tighter DipArb hedging**: Leg2 timeout 180s → 60s, new 20% stop-loss exit, 1:1 hedge enforced against actual on-chain fills
+- ✅ **Fresh copy-trade quotes**: Stale whale prints are skipped (>5s), entries re-quote the live book with spread/premium/liquidity guards
+- ✅ **Custom wallets gated**: Manually added wallets must pass the same WR/PnL/trades/profit-factor/consistency/whale filters as leaderboard picks
+- ✅ **Exposure caps enforced**: Total (30%) and per-market exposure tracked, blocks new trades, shown in status
+- ✅ **Configurable RPC**: `POLYGON_RPC_URL` env honored everywhere (no more hardcoded public endpoint)
+- ✅ **Wallet circuit breaker**: Copy-trading disables a wallet after 3 consecutive failures (1h cooldown)
+- ✅ **Backtesting harness**: JSONL order-book replay with fee/gas modeling (`npm run backtest`)
+- ✅ **MATIC monitoring**: Gas balance polled every 5 minutes against the configured minimum, pauses trading when low
+- ✅ **Sizing floor + streak pause**: Position sizing respects a USD minimum (skips instead of dust orders) and pauses after 6 straight losses
+
+### 🛡️ **Protection System: 4 Layers → 6 Layers**
+- ✅ **Layer 5**: Loss-streak pause (stops trading after 6 consecutive losses)
+- ✅ **Layer 6**: Exposure cap (blocks new positions above 30% of capital)
 
 ## 🆕 What's New in v3.1 (January 2026)
 
@@ -137,6 +157,10 @@ TOTAL_MAX_LOSS_PCT=0.40      # 40% total loss = permanent halt
 # API Keys (Optional but recommended for speed)
 # Get a free key from specific providers if you want better performance
 # ALCHEMY_KEY=...
+
+# Polygon RPC (Optional - avoids the rate-limited public endpoint)
+# Get a free key from Alchemy/Infura/QuickNode and paste the HTTPS URL
+# POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
 ```
 
 **⚠️ IMPORTANT:** 
@@ -192,7 +216,7 @@ The dashboard is your command center with **enhanced risk monitoring**.
 
 ### 🆕 Multi-Layer Protection System
 
-The bot now has **4 layers of protection** to safeguard your capital:
+The bot now has **6 layers of protection** to safeguard your capital:
 
 #### Layer 1: Daily Loss Limit (5%)
 - **What it does**: Stops trading if you lose 5% in one day
@@ -213,6 +237,16 @@ The bot now has **4 layers of protection** to safeguard your capital:
 - **What it does**: **PERMANENT HALT** if total loss reaches 40%
 - **Action**: Stops trading entirely, requires manual restart
 - **Example**: With $250 capital, halts at -$100 total loss
+
+#### Layer 5: Loss-Streak Pause (🆕 v3.2)
+- **What it does**: Stops trading after 6 consecutive losing trades
+- **Action**: Pauses for 60 minutes, then resumes
+- **Why**: Prevents revenge-trading spirals and oversized decay from dynamic sizing
+
+#### Layer 6: Exposure Cap (🆕 v3.2)
+- **What it does**: Blocks new positions when total open exposure exceeds 30% of capital (10% per market)
+- **Action**: New signals are skipped until exposure drops
+- **Example**: With $250 capital, no new trades above $75 total exposure
 
 ### 🆕 Smart Position Sizing
 
@@ -290,12 +324,13 @@ The bot comes with 4 powerful strategies. You can toggle them ON/OFF in the dash
 
 ## 9. Safety & Risks
 
-### ✅ Built-in Safety Features (v3.1)
-1. **Multi-Layer Limits**: 4 levels of automatic protection
-2. **Quality Trader Filtering**: Only follow proven, consistent traders
-3. **Position Size Limits**: Maximum 5% per trade, adapts to performance
-4. **Minimum Trade Values**: All positions can be exited (no stuck trades)
-5. **Permanent Halt**: Trading stops at 40% total loss
+### ✅ Built-in Safety Features (v3.2)
+1. **Multi-Layer Limits**: 6 levels of automatic protection (daily, monthly, drawdown, total halt, loss streak, exposure cap)
+2. **Quality Trader Filtering**: Only follow proven, consistent traders (including custom wallets)
+3. **Position Size Limits**: Maximum 5% per trade, USD minimum floor, adapts to performance
+4. **Price-Protected Orders**: All market orders carry worst-price caps/floors from live books
+5. **Sequential Hedged Execution**: No partial/unhedged fills left behind on failures
+6. **Permanent Halt**: Trading stops at 40% total loss
 
 ### ⚠️ Your Responsibilities
 1. **Private Keys**: Your key gives full access to your funds. Keep it safe.
@@ -332,6 +367,7 @@ If something goes wrong:
 
 ## 📈 Version History
 
+- **v3.2** (September 2026): Execution safety (fee-aware profits, price protection, sequential hedging), 6-layer protection, backtesting harness
 - **v3.1** (January 2026): Enhanced Risk Management, Smart Money improvements, Dynamic sizing
 - **v3.0** (December 2025): Dashboard, Multi-strategy support, Auto-rotation
 - **v2.0** (November 2025): Smart Money, Arbitrage, DipArb strategies
