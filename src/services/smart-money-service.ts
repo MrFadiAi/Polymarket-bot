@@ -29,6 +29,8 @@
 import type { WalletService, TimePeriod, PeriodLeaderboardEntry } from './wallet-service.js';
 import type { RealtimeServiceV2, ActivityTrade } from './realtime-service-v2.js';
 import type { TradingService, OrderResult } from './trading-service.js';
+import type { MarketService } from './market-service.js';
+import { estimateTakerFee } from '../utils/price-utils.js';
 import type { Position, ClosedPosition, ClosedPositionsParams, DataApiClient } from '../clients/data-api.js';
 
 // ============================================================================
@@ -150,6 +152,46 @@ export interface AutoCopyTradingOptions {
   /** Only copy BUY or SELL trades */
   sideFilter?: 'BUY' | 'SELL';
 
+  /**
+   * Maximum age of the whale print before it is considered stale (ms).
+   * Stale prints are skipped — copying them is pure adverse selection.
+   * @default 5000
+   */
+  maxStalenessMs?: number;
+  /**
+   * Maximum live bid/ask spread (fraction, e.g. 0.02 = 2%) at copy time.
+   * Copies are skipped when the book is wider (illiquid / toxic).
+   * Requires a MarketService (see setMarketService); skipped when unset.
+   * @default 0.02
+   */
+  maxSpreadPct?: number;
+  /**
+   * Maximum premium (fraction) of the live quote over the whale's fill price.
+   * E.g. 0.01 skips a BUY copy when best-ask is >1% above the whale print.
+   * Requires a MarketService; skipped when unset.
+   * @default 0.01
+   */
+  maxCopyPremiumPct?: number;
+  /**
+   * Minimum watched-wallet PnL (USDC) required at subscription time when
+   * resolving via topN. Target-address copies skip this (explicit opt-in).
+   * @default 0 (no filter)
+   */
+  minWalletPnl?: number;
+  /**
+   * Per-wallet circuit breaker: disable a wallet after this many consecutive
+   * failed copies, for walletCooldownMs.
+   * @default 3
+   */
+  maxConsecutiveFailures?: number;
+  /** Cooldown for a disabled wallet (ms). @default 3600000 (1h) */
+  walletCooldownMs?: number;
+  /**
+   * Estimated taker fee rate (bps) applied to copy sizing/stats so recorded
+   * spend reflects net cost. @default 0
+   */
+  feeRateBps?: number;
+
   /** Dry run mode */
   dryRun?: boolean;
 
@@ -168,6 +210,24 @@ export interface AutoCopyTradingStats {
   tradesSkipped: number;
   tradesFailed: number;
   totalUsdcSpent: number;
+  /** Estimated taker fees paid across executed copies (USDC) */
+  totalFeesEstimateUsd: number;
+  /** Copies skipped because the whale print was stale */
+  staleSkipped: number;
+  /** Copies skipped because of spread/premium/liquidity guards */
+  quoteGuardSkipped: number;
+  /** Per-wallet rolling counters (keyed by lowercase address) */
+  perWallet: Record<string, { detected: number; executed: number; skipped: number; failed: number }>;
+}
+
+/**
+ * Per-wallet copy health used for the rolling circuit breaker.
+ */
+export interface CopyWalletHealth {
+  consecutiveFailures: number;
+  copiesExecuted: number;
+  lastFailureAt: number;
+  disabledUntil: number;
 }
 
 /**
@@ -690,6 +750,9 @@ export class SmartMoneyService {
 
   private activeSubscription: { unsubscribe: () => void } | null = null;
   private tradeHandlers: Set<(trade: SmartMoneyTrade) => void> = new Set();
+  private marketService: MarketService | null = null;
+  private walletHealth: Map<string, CopyWalletHealth> = new Map();
+  private liveQuoteWarningLogged = false;
 
   constructor(
     walletService: WalletService,
@@ -715,6 +778,47 @@ export class SmartMoneyService {
    */
   setDataApiClient(dataApi: DataApiClient): void {
     this.dataApi = dataApi;
+  }
+
+  /**
+   * Attach a MarketService for live orderbook quotes at copy time.
+   *
+   * Without it, copy prices derive from the (stale) whale print and the
+   * spread/premium/liquidity guards are skipped with a one-time warning.
+   */
+  setMarketService(marketService: MarketService): void {
+    this.marketService = marketService;
+  }
+
+  /**
+   * Rolling per-wallet copy health (circuit-breaker state).
+   */
+  getWalletHealth(): Record<string, CopyWalletHealth> {
+    const out: Record<string, CopyWalletHealth> = {};
+    for (const [addr, health] of this.walletHealth) out[addr] = { ...health };
+    return out;
+  }
+
+  private getOrCreateWalletHealth(address: string): CopyWalletHealth {
+    let health = this.walletHealth.get(address);
+    if (!health) {
+      health = { consecutiveFailures: 0, copiesExecuted: 0, lastFailureAt: 0, disabledUntil: 0 };
+      this.walletHealth.set(address, health);
+    }
+    return health;
+  }
+
+  private bumpWalletCounter(
+    stats: AutoCopyTradingStats,
+    address: string,
+    field: 'detected' | 'executed' | 'skipped' | 'failed'
+  ): void {
+    let entry = stats.perWallet[address];
+    if (!entry) {
+      entry = { detected: 0, executed: 0, skipped: 0, failed: 0 };
+      stats.perWallet[address] = entry;
+    }
+    entry[field]++;
   }
 
   // ============================================================================
@@ -924,7 +1028,12 @@ export class SmartMoneyService {
 
     if (options.topN && options.topN > 0) {
       const smartMoneyList = await this.getSmartMoneyList(options.topN);
-      const topAddresses = smartMoneyList.map(w => w.address);
+      // P9: minimum profit filter also applies to leaderboard-resolved wallets
+      // (explicit targetAddresses are opt-in and skip this gate).
+      const minWalletPnl = options.minWalletPnl ?? 0;
+      const topAddresses = smartMoneyList
+        .filter(w => w.pnl >= minWalletPnl)
+        .map(w => w.address);
       targetAddresses = [...new Set([...targetAddresses, ...topAddresses])];
     }
 
@@ -940,6 +1049,10 @@ export class SmartMoneyService {
       tradesSkipped: 0,
       tradesFailed: 0,
       totalUsdcSpent: 0,
+      totalFeesEstimateUsd: 0,
+      staleSkipped: 0,
+      quoteGuardSkipped: 0,
+      perWallet: {},
     };
 
     // Config
@@ -951,6 +1064,21 @@ export class SmartMoneyService {
     const sideFilter = options.sideFilter;
     const delay = options.delay ?? 0;
     const dryRun = options.dryRun ?? false;
+    const maxStalenessMs = options.maxStalenessMs ?? 5000;
+    const maxSpreadPct = options.maxSpreadPct ?? 0.02;
+    const maxCopyPremiumPct = options.maxCopyPremiumPct ?? 0.01;
+    const maxConsecutiveFailures = options.maxConsecutiveFailures ?? 3;
+    const walletCooldownMs = options.walletCooldownMs ?? 3600000;
+    const feeRateBps = options.feeRateBps ?? 0;
+
+    if (!this.marketService && !this.liveQuoteWarningLogged) {
+      this.liveQuoteWarningLogged = true;
+      console.warn(
+        '[SmartMoneyService] No MarketService attached (setMarketService) — ' +
+        'copies use the whale print for pricing and spread/premium/liquidity guards are skipped. ' +
+        'Attach one to enable live-quote protection.'
+      );
+    }
 
     // Subscribe
     const subscription = this.subscribeSmartMoneyTrades(
@@ -959,7 +1087,17 @@ export class SmartMoneyService {
 
         try {
           // Check target
-          if (!targetAddresses.includes(trade.traderAddress.toLowerCase())) {
+          const walletAddr = trade.traderAddress.toLowerCase();
+          if (!targetAddresses.includes(walletAddr)) {
+            return;
+          }
+          this.bumpWalletCounter(stats, walletAddr, 'detected');
+
+          // P9: per-wallet circuit breaker (rolling health)
+          const health = this.getOrCreateWalletHealth(walletAddr);
+          if (Date.now() < health.disabledUntil) {
+            stats.tradesSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
             return;
           }
 
@@ -967,11 +1105,21 @@ export class SmartMoneyService {
           const tradeValue = trade.size * trade.price;
           if (tradeValue < minTradeSize) {
             stats.tradesSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
             return;
           }
 
           if (sideFilter && trade.side !== sideFilter) {
             stats.tradesSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
+            return;
+          }
+
+          // P5: staleness guard — a delayed whale print is adverse selection
+          if (Date.now() - trade.timestamp > maxStalenessMs) {
+            stats.tradesSkipped++;
+            stats.staleSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
             return;
           }
 
@@ -989,10 +1137,11 @@ export class SmartMoneyService {
           const MIN_ORDER_SIZE = 1;
           if (copyValue < MIN_ORDER_SIZE) {
             stats.tradesSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
             return;
           }
 
-          // Delay
+          // Delay (worsens staleness — live re-quote below compensates)
           if (delay > 0) {
             await new Promise(resolve => setTimeout(resolve, delay));
           }
@@ -1001,15 +1150,59 @@ export class SmartMoneyService {
           const tokenId = trade.tokenId;
           if (!tokenId) {
             stats.tradesSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
             return;
           }
 
-          // Price with slippage
+          // P5: live orderbook quote replaces the stale whale print for pricing.
+          // Reference price for premium guard + protection cap.
+          let referencePrice = trade.price;
+          let quoteGuardFailed = false;
+          if (this.marketService) {
+            try {
+              const book = await this.marketService.getTokenOrderbook(tokenId);
+              const bestAsk = book.asks[0]?.price;
+              const bestBid = book.bids[0]?.price;
+              const bestAskSize = book.asks[0]?.size ?? 0;
+              if (
+                bestAsk !== undefined && bestBid !== undefined &&
+                bestAsk > 0 && bestBid > 0
+              ) {
+                const spreadPct = (bestAsk - bestBid) / bestAsk;
+                if (spreadPct > maxSpreadPct) quoteGuardFailed = true;
+
+                // Premium guard: skip when the market already ran past the whale
+                const liveRef = trade.side === 'BUY' ? bestAsk : bestBid;
+                const premium = trade.side === 'BUY'
+                  ? (liveRef - trade.price) / trade.price
+                  : (trade.price - liveRef) / trade.price;
+                if (premium > maxCopyPremiumPct) quoteGuardFailed = true;
+
+                // Liquidity guard: top-of-book must absorb the copy
+                if (trade.side === 'BUY' && bestAskSize < copySize) quoteGuardFailed = true;
+
+                if (!quoteGuardFailed) referencePrice = liveRef;
+              }
+            } catch {
+              // Quote fetch failed — fall back to the whale print (staleness
+              // guard above still applies). Fail-open avoids liveness loss.
+            }
+          }
+
+          if (quoteGuardFailed) {
+            stats.tradesSkipped++;
+            stats.quoteGuardSkipped++;
+            this.bumpWalletCounter(stats, walletAddr, 'skipped');
+            return;
+          }
+
+          // Price with slippage, anchored on the live quote when available
           const slippagePrice = trade.side === 'BUY'
-            ? trade.price * (1 + maxSlippage)
-            : trade.price * (1 - maxSlippage);
+            ? referencePrice * (1 + maxSlippage)
+            : referencePrice * (1 - maxSlippage);
 
           const usdcAmount = copyValue; // Already calculated above
+          const feeEstimate = estimateTakerFee(usdcAmount, feeRateBps);
 
           // Execute
           let result: OrderResult;
@@ -1035,8 +1228,18 @@ export class SmartMoneyService {
           if (result.success) {
             stats.tradesExecuted++;
             stats.totalUsdcSpent += usdcAmount;
+            stats.totalFeesEstimateUsd += feeEstimate;
+            health.copiesExecuted++;
+            health.consecutiveFailures = 0;
+            this.bumpWalletCounter(stats, walletAddr, 'executed');
           } else {
             stats.tradesFailed++;
+            health.consecutiveFailures++;
+            health.lastFailureAt = Date.now();
+            if (health.consecutiveFailures >= maxConsecutiveFailures) {
+              health.disabledUntil = Date.now() + walletCooldownMs;
+            }
+            this.bumpWalletCounter(stats, walletAddr, 'failed');
           }
 
           options.onTrade?.(trade, result);

@@ -39,6 +39,8 @@ import {
 import { TradingService, type MarketOrderParams } from './trading-service.js';
 import { MarketService } from './market-service.js';
 import { CTFClient } from '../clients/ctf-client.js';
+import { resolvePolygonRpcUrl } from '../utils/rpc.js';
+import { estimateTakerFee } from '../utils/price-utils.js';
 import type { Side } from '../core/types.js';
 import {
   type DipArbServiceConfig,
@@ -154,9 +156,44 @@ export class DipArbService extends EventEmitter {
     if (privateKey) {
       this.ctf = new CTFClient({
         privateKey,
-        rpcUrl: 'https://polygon-rpc.com',
+        rpcUrl: resolvePolygonRpcUrl(),
         chainId,
       });
+    }
+  }
+
+  /**
+   * Reconcile estimated leg fills against on-chain balances (PROBLEMS.md #10).
+   *
+   * Split-order fills are estimated client-side; the venue may partially
+   * fill. When a CTF client is available, read actual UP/DOWN balances and
+   * clamp the recorded leg shares to what is really held.
+   *
+   * @returns Reconciled share count (<= estimatedShares)
+   */
+  private async reconcileLegShares(
+    estimatedShares: number,
+    legSide: DipArbSide
+  ): Promise<number> {
+    if (!this.ctf || !this.market) return estimatedShares;
+    try {
+      const positions = await this.ctf.getPositionBalanceByTokenIds(
+        this.market.conditionId,
+        { yesTokenId: this.market.upTokenId, noTokenId: this.market.downTokenId }
+      );
+      // NOTE: CTF position IDs map UP→yes / DOWN→no for UpDown markets.
+      const held = legSide === 'UP'
+        ? parseFloat(positions.yesBalance)
+        : parseFloat(positions.noBalance);
+      if (!Number.isFinite(held) || held <= 0) return estimatedShares;
+      if (held + 1e-9 < estimatedShares) {
+        this.log(`⚠️ Fill mismatch: estimated ${estimatedShares.toFixed(2)} ${legSide} but on-chain holds ${held.toFixed(2)} — clamping to actual`);
+        return Math.floor(held * 1e6) / 1e6;
+      }
+      return estimatedShares;
+    } catch (error) {
+      this.log(`⚠️ Reconciliation skipped: ${error instanceof Error ? error.message : String(error)}`);
+      return estimatedShares;
     }
   }
 
@@ -599,10 +636,14 @@ export class DipArbService extends EventEmitter {
 
       // 执行多笔订单
       for (let i = 0; i < splitCount; i++) {
+        // Price protection (PROBLEMS.md #2): send the worst acceptable price
+        // so the venue rejects fills beyond max slippage instead of sweeping.
         const orderParams: MarketOrderParams = {
           tokenId: signal.tokenId,
           side: 'BUY' as Side,
           amount: amountPerOrder,
+          price: signal.targetPrice,
+          orderType: 'FOK',
         };
 
         if (this.config.debug && splitCount > 1) {
@@ -618,6 +659,9 @@ export class DipArbService extends EventEmitter {
         } else {
           failedOrders++;
           this.log(`Leg1 order ${i + 1}/${splitCount} failed: ${result.errorMsg}`);
+          // Abort remaining splits on first failure: continuing to slice a
+          // moved market guarantees an unbalanced partial fill (PROBLEMS.md #10).
+          break;
         }
 
         // 订单间隔
@@ -630,10 +674,19 @@ export class DipArbService extends EventEmitter {
       if (totalSharesFilled > 0) {
         const avgPrice = totalAmountSpent / totalSharesFilled;
 
+        // Reconcile estimated fills against on-chain reality (PROBLEMS.md #10).
+        const reconciledShares = await this.reconcileLegShares(totalSharesFilled, signal.dipSide);
+        const fillRatio = totalSharesFilled > 0 ? reconciledShares / totalSharesFilled : 1;
+        const reconciledSpent = totalAmountSpent * fillRatio;
+        if (reconciledShares < totalSharesFilled) {
+          totalSharesFilled = reconciledShares;
+          totalAmountSpent = reconciledSpent;
+        }
+
         // Record leg1 fill
         this.currentRound.leg1 = {
           side: signal.dipSide,
-          price: avgPrice,
+          price: totalAmountSpent / totalSharesFilled,
           shares: totalSharesFilled,
           timestamp: Date.now(),
           tokenId: signal.tokenId,
@@ -643,12 +696,13 @@ export class DipArbService extends EventEmitter {
 
         this.lastExecutionTime = Date.now();
 
-        // Detailed execution logging
-        const slippage = ((avgPrice - signal.currentPrice) / signal.currentPrice * 100);
+        // Detailed execution logging (uses reconciled actual fill price)
+        const actualPrice = totalAmountSpent / totalSharesFilled;
+        const slippage = ((actualPrice - signal.currentPrice) / signal.currentPrice * 100);
         const execTimeMs = Date.now() - startTime;
 
-        this.log(`✅ Leg1 FILLED: ${signal.dipSide} x${totalSharesFilled.toFixed(1)} @ ${avgPrice.toFixed(4)}`);
-        this.log(`   Expected: ${signal.currentPrice.toFixed(4)} | Actual: ${avgPrice.toFixed(4)} | Slippage: ${slippage >= 0 ? '+' : ''}${slippage.toFixed(2)}%`);
+        this.log(`✅ Leg1 FILLED: ${signal.dipSide} x${totalSharesFilled.toFixed(1)} @ ${actualPrice.toFixed(4)}`);
+        this.log(`   Expected: ${signal.currentPrice.toFixed(4)} | Actual: ${actualPrice.toFixed(4)} | Slippage: ${slippage >= 0 ? '+' : ''}${slippage.toFixed(2)}%`);
         this.log(`   Execution time: ${execTimeMs}ms | Orders: ${splitCount - failedOrders}/${splitCount}`);
 
         // Log orderbook after execution
@@ -661,7 +715,7 @@ export class DipArbService extends EventEmitter {
           leg: 'leg1',
           roundId: signal.roundId,
           side: signal.dipSide,
-          price: avgPrice,
+          price: actualPrice,
           shares: totalSharesFilled,
           orderId: lastOrderId,
           executionTimeMs: execTimeMs,
@@ -729,10 +783,13 @@ export class DipArbService extends EventEmitter {
 
       // 执行多笔订单
       for (let i = 0; i < splitCount; i++) {
+        // Price protection (PROBLEMS.md #2).
         const orderParams: MarketOrderParams = {
           tokenId: signal.tokenId,
           side: 'BUY' as Side,
           amount: amountPerOrder,
+          price: signal.targetPrice,
+          orderType: 'FOK',
         };
 
         if (this.config.debug && splitCount > 1) {
@@ -748,6 +805,9 @@ export class DipArbService extends EventEmitter {
         } else {
           failedOrders++;
           this.log(`Leg2 order ${i + 1}/${splitCount} failed: ${result.errorMsg}`);
+          // Abort remaining splits on first failure to bound the UP/DOWN
+          // mismatch instead of slicing a moved market (PROBLEMS.md #10).
+          break;
         }
 
         // 订单间隔
@@ -758,6 +818,27 @@ export class DipArbService extends EventEmitter {
 
       // 至少有一笔成功
       if (totalSharesFilled > 0) {
+        // Reconcile estimated fills against on-chain reality, then clamp the
+        // hedge to the ACTUAL Leg1 size so the pair stays 1:1 (PROBLEMS.md #10).
+        // Leg2 must never exceed what Leg1 really holds.
+        const leg1Actual = this.currentRound.leg1?.shares ?? totalSharesFilled;
+        const reconciledLeg2 = await this.reconcileLegShares(totalSharesFilled, signal.hedgeSide);
+        const effectiveLeg2 = Math.min(reconciledLeg2, leg1Actual);
+        if (effectiveLeg2 < totalSharesFilled) {
+          const ratio = effectiveLeg2 / totalSharesFilled;
+          this.log(`⚠️ Hedge clamped: leg2 ${totalSharesFilled.toFixed(2)} → ${effectiveLeg2.toFixed(2)} to match leg1 ${leg1Actual.toFixed(2)} (1:1)`);
+          totalAmountSpent *= ratio;
+          totalSharesFilled = effectiveLeg2;
+        }
+        if (totalSharesFilled <= 0) {
+          return {
+            success: false,
+            leg: 'leg2',
+            roundId: signal.roundId,
+            error: 'Reconciled leg2 shares are zero - hedge aborted to preserve 1:1',
+            executionTimeMs: Date.now() - startTime,
+          };
+        }
         const avgPrice = totalAmountSpent / totalSharesFilled;
         const leg1Price = this.currentRound.leg1?.price || 0;
         const actualTotalCost = leg1Price + avgPrice;
@@ -870,11 +951,30 @@ export class DipArbService extends EventEmitter {
       };
     }
 
-    // Merge the minimum of Leg1 and Leg2 shares (should be equal after our fix)
-    const shares = Math.min(
+    // Merge the minimum of Leg1 and Leg2 shares (should be equal after our fix).
+    // Reconcile against on-chain balances first so we never attempt to merge
+    // more pairs than are actually held (PROBLEMS.md #10).
+    let shares = Math.min(
       this.currentRound.leg1?.shares || 0,
       this.currentRound.leg2?.shares || 0
     );
+
+    try {
+      const positions = await this.ctf.getPositionBalanceByTokenIds(
+        this.market.conditionId,
+        { yesTokenId: this.market.upTokenId, noTokenId: this.market.downTokenId }
+      );
+      const heldPairs = Math.min(
+        parseFloat(positions.yesBalance) || 0,
+        parseFloat(positions.noBalance) || 0
+      );
+      if (heldPairs > 0 && heldPairs + 1e-9 < shares) {
+        this.log(`⚠️ Merge clamped: recorded ${shares.toFixed(2)} pairs but on-chain holds ${heldPairs.toFixed(2)} — merging actual`);
+        shares = Math.floor(heldPairs * 1e6) / 1e6;
+      }
+    } catch {
+      // Fall back to recorded shares when the chain is unreachable.
+    }
 
     if (shares <= 0) {
       return {
@@ -1097,12 +1197,27 @@ export class DipArbService extends EventEmitter {
       this.log(`New round: ${roundId}, Price to Beat: ${priceToBeat.toFixed(2)}`);
     }
 
-    // Check for round expiration - exit Leg1 if Leg2 times out
-    if (this.currentRound && this.currentRound.phase === 'leg1_filled') {
-      const elapsed = (Date.now() - (this.currentRound.leg1?.timestamp || this.currentRound.startTime)) / 1000;
-      if (elapsed > this.config.leg2TimeoutSeconds) {
-        // ✅ FIX: Exit Leg1 position to avoid unhedged exposure
-        this.log(`⚠️ Leg2 timeout (${elapsed.toFixed(0)}s > ${this.config.leg2TimeoutSeconds}s), exiting Leg1 position...`);
+    // Check for round expiration - exit Leg1 if Leg2 times out.
+    // Also stop out early when the Leg1 position has decayed beyond
+    // stopLossPct, so we exit while the position is still sellable instead
+    // of waiting until it is sub-$1 dust (PROBLEMS.md #4).
+    if (this.currentRound && this.currentRound.phase === 'leg1_filled' && this.currentRound.leg1) {
+      const leg1 = this.currentRound.leg1;
+      const elapsed = (Date.now() - (leg1.timestamp || this.currentRound.startTime)) / 1000;
+      const leg1Bid = leg1.side === 'UP'
+        ? (this.upAsks[0]?.price ?? null)
+        : (this.downAsks[0]?.price ?? null);
+      const stopHit = leg1Bid !== null
+        && leg1.price > 0
+        && (leg1.price - leg1Bid) / leg1.price >= this.config.stopLossPct;
+      if (stopHit) {
+        this.log(`🛑 Stop-loss: ${leg1.side} ${leg1.price.toFixed(4)} → ${leg1Bid!.toFixed(4)} (≥${(this.config.stopLossPct * 100).toFixed(0)}% down), exiting unhedged Leg1...`);
+      }
+      if (stopHit || elapsed > this.config.leg2TimeoutSeconds) {
+        if (!stopHit) {
+          // ✅ FIX: Exit Leg1 position to avoid unhedged exposure
+          this.log(`⚠️ Leg2 timeout (${elapsed.toFixed(0)}s > ${this.config.leg2TimeoutSeconds}s), exiting Leg1 position...`);
+        }
 
         // Try to sell Leg1 position
         const exitResult = await this.emergencyExitLeg1();
@@ -1148,23 +1263,37 @@ export class DipArbService extends EventEmitter {
 
       const exitAmount = leg1.shares * currentPrice;
 
-      // 检查退出金额是否满足最低限额
+      // 检查退出金额是否满足最低限额. A sub-$1 position cannot be sold on
+      // the CLOB — record it explicitly as stuck dust and emit an event so
+      // operators (and the merge path at expiry) can account for it instead
+      // of silently holding unhedged exposure (PROBLEMS.md #4).
       if (exitAmount < 1) {
-        this.log(`⚠️ Exit amount ($${exitAmount.toFixed(2)}) below $1 minimum - position will be held to expiry`);
+        this.log(`⚠️ Exit amount ($${exitAmount.toFixed(2)}) below $1 minimum - position is stuck dust; will attempt merge/redeem at expiry`);
+        this.emit('dustStuck', {
+          roundId: this.currentRound.roundId,
+          side: leg1.side,
+          shares: leg1.shares,
+          tokenId: leg1.tokenId,
+          exitAmount,
+        });
         return {
           success: false,
           leg: 'exit',
           roundId: this.currentRound.roundId,
-          error: `Exit amount ($${exitAmount.toFixed(2)}) below Polymarket minimum ($1) - holding to expiry`,
+          error: `Exit amount ($${exitAmount.toFixed(2)}) below Polymarket minimum ($1) - stuck dust, will attempt merge/redeem at expiry`,
           executionTimeMs: Date.now() - startTime,
         };
       }
 
-      // Market sell the position
+      // Market sell with a worst-price floor so the exit itself cannot sweep
+      // the book (PROBLEMS.md #2).
+      const exitFloor = currentPrice * (1 - this.config.maxSlippage);
       const result = await this.tradingService.createMarketOrder({
         tokenId: leg1.tokenId,
         side: 'SELL' as Side,
         amount: exitAmount,
+        price: exitFloor,
+        orderType: 'FOK',
       });
 
       if (result.success) {
@@ -1354,7 +1483,14 @@ export class DipArbService extends EventEmitter {
     if (!this.currentRound || !this.market) return null;
 
     const targetPrice = price * (1 + this.config.maxSlippage);
-    const estimatedTotalCost = targetPrice + oppositeAsk;
+    // Fee-aware estimate (PROBLEMS.md #1): taker fees on both legs' notional
+    // come out of the $1 payout, so include them before comparing to sumTarget.
+    const grossEstimate = targetPrice + oppositeAsk;
+    const estFee = estimateTakerFee(
+      grossEstimate * this.config.shares,
+      this.config.feeRateBps
+    ) / this.config.shares;
+    const estimatedTotalCost = grossEstimate + estFee;
     const estimatedProfitRate = calculateDipArbProfitRate(estimatedTotalCost);
 
     // openPrice: 对于 dip/surge 信号，使用滑动窗口参考价格；否则使用轮次开盘价
@@ -1401,9 +1537,16 @@ export class DipArbService extends EventEmitter {
     if (currentPrice >= 1) return null;
 
     const targetPrice = currentPrice * (1 + this.config.maxSlippage);
-    const totalCost = leg1.price + targetPrice;
+    // Fee-aware hedge gate (PROBLEMS.md #1): totalCost must survive taker
+    // fees before it counts as a hedgeable opportunity.
+    const grossCost = leg1.price + targetPrice;
+    const hedgeFee = estimateTakerFee(
+      grossCost * leg1.shares,
+      this.config.feeRateBps
+    ) / Math.max(leg1.shares, 1e-9);
+    const totalCost = grossCost + hedgeFee;
 
-    // Check if profitable - 只用 sumTarget 控制
+    // Check if profitable - 只用 sumTarget 控制 (now fee-inclusive)
     if (totalCost > this.config.sumTarget) {
       // 每 5 秒输出一次等待日志，避免刷屏
       if (this.config.debug && Date.now() % 5000 < 100) {

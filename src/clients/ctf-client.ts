@@ -24,6 +24,7 @@
  */
 
 import { ethers, Contract, Wallet, BigNumber } from 'ethers';
+import { resolvePolygonRpcUrl } from '../utils/rpc.js';
 
 // ===== Contract Addresses (Polygon Mainnet) =====
 
@@ -191,7 +192,7 @@ export class CTFClient {
   private maticPriceLastUpdated: number = 0;
 
   constructor(config: CTFConfig) {
-    const rpcUrl = config.rpcUrl || 'https://polygon-rpc.com';
+    const rpcUrl = resolvePolygonRpcUrl(config.rpcUrl);
     this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     this.wallet = new Wallet(config.privateKey, this.provider);
     this.ctfContract = new Contract(CTF_CONTRACT, CTF_ABI, this.wallet);
@@ -242,6 +243,8 @@ export class CTFClient {
    * - Has MATIC for gas fees
    *
    * @param amount - Minimum USDC.e amount needed (e.g., "100" for 100 USDC.e)
+   * @param minMatic - Minimum MATIC for gas (default: 0.01). Pass the bot's
+   * configured floor (e.g. CONFIG.onchain.minMatic) so the check matches policy.
    * @returns Ready status with balances and suggestions
    *
    * @example
@@ -253,7 +256,7 @@ export class CTFClient {
    * }
    * ```
    */
-  async checkReadyForCTF(amount: string): Promise<{
+  async checkReadyForCTF(amount: string, minMatic = 0.01): Promise<{
     ready: boolean;
     usdcEBalance: string;
     nativeUsdcBalance: string;
@@ -280,8 +283,8 @@ export class CTFClient {
     };
 
     // Check MATIC for gas
-    if (maticBalance < 0.01) {
-      result.suggestion = `Insufficient MATIC for gas fees. Have: ${maticBalance.toFixed(4)} MATIC, need at least 0.01 MATIC.`;
+    if (maticBalance < minMatic) {
+      result.suggestion = `Insufficient MATIC for gas fees. Have: ${maticBalance.toFixed(4)} MATIC, need at least ${minMatic} MATIC.`;
       return result;
     }
 

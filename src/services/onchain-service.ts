@@ -34,6 +34,7 @@
  */
 
 import { ethers } from 'ethers';
+import { resolvePolygonRpcUrl } from '../utils/rpc.js';
 
 // Import underlying services
 import {
@@ -144,7 +145,7 @@ export class OnchainService {
   private swapService: SwapService;
 
   constructor(config: OnchainServiceConfig) {
-    const rpcUrl = config.rpcUrl || 'https://polygon-rpc.com';
+    const rpcUrl = resolvePolygonRpcUrl(config.rpcUrl);
 
     // Create shared provider and wallet
     this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
@@ -359,10 +360,13 @@ export class OnchainService {
    * Check if wallet is ready for CTF trading operations
    *
    * Combines CTF readiness check with authorization status.
+   *
+   * @param minMatic - Minimum MATIC for gas, forwarded to the CTF check
+   * (default: 0.01 to preserve legacy behavior).
    */
-  async checkReadyForCTF(amount: string): Promise<ReadyStatus> {
+  async checkReadyForCTF(amount: string, minMatic = 0.01): Promise<ReadyStatus> {
     // Check CTF readiness (balances)
-    const ctfStatus = await this.ctfClient.checkReadyForCTF(amount);
+    const ctfStatus = await this.ctfClient.checkReadyForCTF(amount, minMatic);
 
     // Check authorization status
     const authStatus = await this.authService.checkAllowances();

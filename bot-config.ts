@@ -34,6 +34,13 @@ import {
   type SmartMoneyLeaderboardEntry,
   type BinanceKLine,
 } from './src/index.js';
+import {
+  calculatePositionSize as calcSizedPosition,
+  shouldPauseForLossStreak,
+  evaluateWalletQuality,
+  computeWalletQualityFromPositions,
+  checkExposure,
+} from './src/utils/risk.js';
 
 // ============================================================================
 // CONFIGURATION
@@ -194,6 +201,10 @@ interface BotState {
   redeems: number;
   swaps: number;
 
+  // 🔴 P7: open-exposure tracking (enforced in canTrade/canOpenPosition)
+  totalExposureUsd: number;
+  perMarketExposureUsd: Record<string, number>;
+
   // Balances
   usdcBalance: number;
   usdcEBalance: number;
@@ -239,6 +250,8 @@ const state: BotState = {
   usdcBalance: 0,
   usdcEBalance: 0,
   maticBalance: 0,
+  totalExposureUsd: 0,
+  perMarketExposureUsd: {},
   btcTrend: 'neutral',
   ethTrend: 'neutral',
   solTrend: 'neutral',
@@ -336,6 +349,21 @@ function canTrade(): boolean {
     return false;
   }
 
+  // 🔴 Layer 5 (P13): consecutive-loss circuit breaker
+  if (shouldPauseForLossStreak(state.consecutiveLosses, CONFIG.risk.maxConsecutiveLosses)) {
+    state.isPaused = true;
+    state.pauseUntil = Date.now() + CONFIG.risk.pauseOnBreachMinutes * 60 * 1000;
+    log('WARN', `Loss streak limit reached: ${state.consecutiveLosses} consecutive losses (max ${CONFIG.risk.maxConsecutiveLosses}) — pausing for ${CONFIG.risk.pauseOnBreachMinutes} minutes`);
+    return false;
+  }
+
+  // 🔴 Layer 6 (P7): total exposure cap
+  const exposureCheck = checkExposure(state.totalExposureUsd, CONFIG.capital.totalUsd, CONFIG.capital.maxTotalExposurePct);
+  if (!exposureCheck.allowed) {
+    log('WARN', `Total exposure cap breached: $${state.totalExposureUsd.toFixed(2)} (${(exposureCheck.usagePct * 100).toFixed(1)}% of capital, cap ${(CONFIG.capital.maxTotalExposurePct * 100).toFixed(0)}%) — blocking new positions`);
+    return false;
+  }
+
   return true;
 }
 
@@ -361,32 +389,130 @@ function recordTrade(profit: number, strategy: string) {
   else if (strategy === 'direct') state.directTrades++;
 }
 
-// 🔴 NEW: Dynamic position sizing based on performance
+// 🔴 FIXED (P13): dynamic sizing with USD floor — returns 0 = skip the trade
+// (prevents dust orders when streak decay shrinks size below minOrderUsd).
 function calculatePositionSize(baseSize: number): number {
-  if (!CONFIG.risk.enableDynamicSizing) return baseSize;
-
-  let size = baseSize;
-
-  // Reduce during losing streaks
-  if (state.consecutiveLosses > 2) {
-    const reduction = Math.pow(1 - CONFIG.risk.lossSizingReduction, state.consecutiveLosses - 2);
-    size *= reduction;
-    if (CONFIG.risk.minPositionPct && size < CONFIG.risk.minPositionPct) {
-      log('WARN', `Position size reduced to minimum ${(CONFIG.risk.minPositionPct * 100).toFixed(1)}% due to ${state.consecutiveLosses} consecutive losses`);
+  const sized = calcSizedPosition(
+    baseSize,
+    {
+      consecutiveLosses: state.consecutiveLosses,
+      consecutiveWins: state.consecutiveWins,
+      capitalUsd: CONFIG.capital.totalUsd,
+    },
+    {
+      enableDynamicSizing: CONFIG.risk.enableDynamicSizing,
+      minPositionPct: CONFIG.risk.minPositionPct,
+      maxPositionPct: CONFIG.risk.maxPositionPct,
+      lossSizingReduction: CONFIG.risk.lossSizingReduction,
+      winSizingIncrease: CONFIG.risk.winSizingIncrease,
+      minOrderUsd: CONFIG.capital.minOrderUsd,
     }
+  );
+  if (sized === 0 && baseSize > 0) {
+    log('WARN', `Position sizing skipped: sized notional below $${CONFIG.capital.minOrderUsd} floor after ${state.consecutiveLosses} consecutive losses`);
   }
+  return sized;
+}
 
-  // Increase slightly during winning streaks (capped)
-  if (state.consecutiveWins > 3) {
-    const increase = 1 + (Math.min(state.consecutiveWins - 3, 5) * CONFIG.risk.winSizingIncrease);
-    size *= increase;
+// 🔴 P7: gate for opening a new position (per-trade + per-market + total caps)
+function canOpenPosition(marketKey: string, sizeUsd: number): boolean {
+  if (!canTrade()) return false;
+  const perTradeCap = CONFIG.capital.totalUsd * CONFIG.capital.maxPerTradePct;
+  if (sizeUsd > perTradeCap) {
+    log('WARN', `Position blocked: $${sizeUsd.toFixed(2)} exceeds per-trade cap $${perTradeCap.toFixed(2)}`);
+    return false;
   }
+  const perMarketCap = CONFIG.capital.totalUsd * CONFIG.capital.maxPerMarketPct;
+  const marketExposure = state.perMarketExposureUsd[marketKey] ?? 0;
+  if (marketExposure + sizeUsd > perMarketCap) {
+    log('WARN', `Position blocked: ${marketKey} exposure $${(marketExposure + sizeUsd).toFixed(2)} exceeds per-market cap $${perMarketCap.toFixed(2)}`);
+    return false;
+  }
+  const totalCap = CONFIG.capital.totalUsd * CONFIG.capital.maxTotalExposurePct;
+  if (state.totalExposureUsd + sizeUsd > totalCap) {
+    log('WARN', `Position blocked: total exposure $${(state.totalExposureUsd + sizeUsd).toFixed(2)} exceeds cap $${totalCap.toFixed(2)}`);
+    return false;
+  }
+  return true;
+}
 
-  // Apply floor and ceiling
-  size = Math.max(CONFIG.risk.minPositionPct || 0.01, size);
-  size = Math.min(CONFIG.risk.maxPositionPct || 0.05, size);
+function trackExposure(marketKey: string, sizeUsd: number): void {
+  state.totalExposureUsd += sizeUsd;
+  state.perMarketExposureUsd[marketKey] = (state.perMarketExposureUsd[marketKey] ?? 0) + sizeUsd;
+}
 
-  return size;
+function releaseExposure(marketKey: string, sizeUsd: number): void {
+  state.totalExposureUsd = Math.max(0, state.totalExposureUsd - sizeUsd);
+  state.perMarketExposureUsd[marketKey] = Math.max(0, (state.perMarketExposureUsd[marketKey] ?? 0) - sizeUsd);
+}
+
+// 🔴 P6: single shared quality gate for custom + leaderboard wallets (no bypass)
+function judgeWallet(
+  address: string,
+  pnl: number,
+  tradeCount: number,
+  positions: Array<{ cashPnl?: number | null }>
+): boolean {
+  const q = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
+  const { pass, failures } = evaluateWalletQuality(
+    {
+      winRate: q.winRate,
+      pnl,
+      tradeCount,
+      profitFactor: q.profitFactor,
+      consistencyScore: q.consistencyScore,
+      singleTradeExposure: q.singleTradeExposure,
+    },
+    {
+      minWinRate: CONFIG.smartMoney.minWinRate,
+      minPnl: CONFIG.smartMoney.minPnl,
+      minTrades: CONFIG.smartMoney.minTrades,
+      minProfitFactor: CONFIG.smartMoney.minProfitFactor,
+      minConsistencyScore: CONFIG.smartMoney.minConsistencyScore,
+      maxSingleTradeExposure: CONFIG.smartMoney.maxSingleTradeExposure,
+    }
+  );
+  if (pass) {
+    log('WALLET', `✅ ${address.slice(0, 10)}... WR:${(q.winRate * 100).toFixed(0)}% PF:${q.profitFactor.toFixed(2)}x Consistency:${(q.consistencyScore * 100).toFixed(0)}% PnL:$${pnl}`);
+  } else if (CONFIG.dryRun) {
+    log('WALLET', `❌ ${address.slice(0, 10)}... REJECTED: ${failures.join(', ')}`);
+  }
+  return pass;
+}
+
+// 🔴 P7: refresh cached exposure from on-chain positions (best-effort)
+async function refreshExposure(sdk: PolymarketSDK) {
+  try {
+    const address = sdk.tradingService.getAddress();
+    const positions = await sdk.subgraph.getUserPositions(address);
+    let total = 0;
+    const perMarket: Record<string, number> = {};
+    for (const p of positions as unknown as Array<Record<string, unknown>>) {
+      const v = Math.abs(Number(p.currentValue ?? p.value ?? p.notional ?? 0));
+      if (!Number.isFinite(v) || v <= 0) continue;
+      total += v;
+      const key = String(p.conditionId ?? p.market ?? p.marketId ?? 'unknown');
+      perMarket[key] = (perMarket[key] ?? 0) + v;
+    }
+    state.totalExposureUsd = total;
+    state.perMarketExposureUsd = perMarket;
+  } catch { /* best-effort; keep last known exposure */ }
+}
+
+// 🔴 P12: periodic gas-balance monitor — the startup check alone goes stale
+async function monitorMatic() {
+  if (!onchainService || CONFIG.dryRun) return;
+  try {
+    const matic = parseFloat(await onchainService.getMaticBalance());
+    state.maticBalance = matic;
+    if (matic < CONFIG.onchain.minMatic) {
+      log('WARN', `⛽ MATIC low: ${matic.toFixed(4)} < ${CONFIG.onchain.minMatic} required — pausing new trades until refueled`);
+      state.isPaused = true;
+      state.pauseUntil = Date.now() + 30 * 60 * 1000;
+    }
+  } catch (err) {
+    log('WARN', `MATIC monitor failed: ${(err as Error).message}`);
+  }
 }
 
 // ============================================================================
@@ -399,69 +525,33 @@ async function setupSmartMoney(sdk: PolymarketSDK) {
 
   const qualified: string[] = [];
 
-  // 1. Add custom wallets first (always included, no filtering)
+  // Fetch leaderboard once — resolves PnL/trade counts for ALL candidates
+  const leaderboard = await sdk.smartMoney.getLeaderboard({ limit: CONFIG.smartMoney.topN * 2 });
+  const entryByAddress = new Map(leaderboard.entries.map(e => [e.address.toLowerCase(), e]));
+
+  // 1. Custom wallets (P6: SAME strict filters as leaderboard — no bypass)
   if (CONFIG.smartMoney.customWallets && CONFIG.smartMoney.customWallets.length > 0) {
     for (const wallet of CONFIG.smartMoney.customWallets) {
-      qualified.push(wallet);
-      log('WALLET', `⭐ Custom wallet added: ${wallet.slice(0, 10)}...`);
+      try {
+        const entry = entryByAddress.get(wallet.toLowerCase());
+        const positions = await sdk.dataApi.getPositions(wallet);
+        const fallback = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
+        const pnl = entry?.pnl ?? fallback.totalPnl;
+        const tradeCount = entry?.tradeCount ?? fallback.tradeCount;
+        if (judgeWallet(wallet, pnl, tradeCount, positions) && !qualified.includes(wallet)) {
+          qualified.push(wallet);
+        }
+      } catch { /* skip unreachable wallets */ }
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
-  // 2. Add wallets from leaderboard (with STRICT filtering)
-  const leaderboard = await sdk.smartMoney.getLeaderboard({ limit: CONFIG.smartMoney.topN * 2 });
-
+  // 2. Wallets from leaderboard (with STRICT filtering)
   for (const entry of leaderboard.entries) {
     try {
       const positions = await sdk.dataApi.getPositions(entry.address);
-
-      if (positions.length < CONFIG.smartMoney.minTrades) {
-        continue;  // Skip if not enough trades
-      }
-
-      // Calculate basic stats
-      const wins = positions.filter(p => (p.cashPnl ?? 0) > 0);
-      const losses = positions.filter(p => (p.cashPnl ?? 0) < 0);
-      const winRate = positions.length > 0 ? wins.length / positions.length : 0;
-
-      // 🔴 NEW: Profit Factor (total wins / total losses)
-      const totalWins = wins.reduce((sum, p) => sum + Math.abs(p.cashPnl ?? 0), 0);
-      const totalLosses = losses.reduce((sum, p) => sum + Math.abs(p.cashPnl ?? 0), 0);
-      const profitFactor = totalLosses > 0 ? totalWins / totalLosses : (totalWins > 0 ? 999 : 0);
-
-      // 🔴 NEW: Check for whale trades (single trade dominance)
-      const sortedPnl = positions.map(p => Math.abs(p.cashPnl ?? 0)).sort((a, b) => b - a);
-      const biggestTrade = sortedPnl[0] ?? 0;
-      const totalAbsPnl = sortedPnl.reduce((s, v) => s + v, 0);
-      const singleTradeExposure = totalAbsPnl > 0 ? biggestTrade / totalAbsPnl : 0;
-
-      // 🔴 NEW: Consistency score (last N trades performance)
-      const lastNTrades = positions.slice(0, CONFIG.smartMoney.checkLastNTrades);
-      const recentWins = lastNTrades.filter(p => (p.cashPnl ?? 0) > 0).length;
-      const consistencyScore = lastNTrades.length > 0 ? recentWins / lastNTrades.length : 0;
-
-      // Apply ALL filters
-      const passesWinRate = winRate >= CONFIG.smartMoney.minWinRate;
-      const passesPnl = entry.pnl >= CONFIG.smartMoney.minPnl;
-      const passesTrades = (entry.tradeCount || 0) >= CONFIG.smartMoney.minTrades;
-      const passesProfitFactor = profitFactor >= CONFIG.smartMoney.minProfitFactor;
-      const passesConsistency = consistencyScore >= CONFIG.smartMoney.minConsistencyScore;
-      const passesWhaleCheck = singleTradeExposure <= CONFIG.smartMoney.maxSingleTradeExposure;
-
-      if (passesWinRate && passesPnl && passesTrades && passesProfitFactor && passesConsistency && passesWhaleCheck) {
-        if (!qualified.includes(entry.address)) {
-          qualified.push(entry.address);
-          log('WALLET', `✅ ${entry.address.slice(0, 10)}... WR:${(winRate * 100).toFixed(0)}% PF:${profitFactor.toFixed(2)}x Consistency:${(consistencyScore * 100).toFixed(0)}% PnL:$${entry.pnl}`);
-        }
-      } else {
-        // Log why wallet was rejected (in debug mode)
-        const failures = [];
-        if (!passesWinRate) failures.push(`WR:${(winRate * 100).toFixed(0)}%<${(CONFIG.smartMoney.minWinRate * 100).toFixed(0)}%`);
-        if (!passesProfitFactor) failures.push(`PF:${profitFactor.toFixed(2)}<${CONFIG.smartMoney.minProfitFactor}`);
-        if (!passesConsistency) failures.push(`Cons:${(consistencyScore * 100).toFixed(0)}%<${(CONFIG.smartMoney.minConsistencyScore * 100).toFixed(0)}%`);
-        if (!passesWhaleCheck) failures.push(`Whale:${(singleTradeExposure * 100).toFixed(0)}%>${(CONFIG.smartMoney.maxSingleTradeExposure * 100).toFixed(0)}%`);
-        if (CONFIG.dryRun && failures.length > 0) {
-          log('WALLET', `❌ ${entry.address.slice(0, 10)}... REJECTED: ${failures.join(', ')}`);
-        }
+      if (judgeWallet(entry.address, entry.pnl, entry.tradeCount || 0, positions) && !qualified.includes(entry.address)) {
+        qualified.push(entry.address);
       }
 
       await new Promise(r => setTimeout(r, 200));
@@ -508,6 +598,7 @@ async function setupArbitrage(sdk: PolymarketSDK) {
 
   arbService = new ArbitrageService({
     privateKey: CONFIG.dryRun ? undefined : process.env.POLYMARKET_PRIVATE_KEY,
+    rpcUrl: process.env.POLYGON_RPC_URL, // P8: configurable RPC
     profitThreshold: CONFIG.arbitrage.profitThreshold,
     minTradeSize: CONFIG.arbitrage.minTradeSize,
     maxTradeSize: CONFIG.arbitrage.maxTradeSize,
@@ -598,9 +689,11 @@ async function setupOnchain() {
   try {
     onchainService = new OnchainService({
       privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
+      rpcUrl: process.env.POLYGON_RPC_URL, // P8: configurable RPC (service falls back to default)
     });
 
-    const status = await onchainService.checkReadyForCTF('10');
+    // P12: enforce the configured MATIC floor (was hardcoded 0.01 vs minMatic 0.5)
+    const status = await onchainService.checkReadyForCTF('10', CONFIG.onchain.minMatic);
     log('CHAIN', 'CTF Ready Status', {
       ready: status.ready,
       usdcE: status.usdcEBalance,
@@ -846,6 +939,7 @@ function displayStatus() {
   console.log(`    Monthly Limit:${monthlyStatus} (${monthlyPct}% used)`);
   console.log(`    Drawdown:     ${drawdownStatus} (${(state.currentDrawdown * 100).toFixed(1)}%)`);
   console.log(`    Consecutive:  ${state.consecutiveLosses} losses | ${state.consecutiveWins} wins`);
+  console.log(`    Exposure:     $${state.totalExposureUsd.toFixed(2)} / $${(CONFIG.capital.totalUsd * CONFIG.capital.maxTotalExposurePct).toFixed(2)} max (${(CONFIG.capital.maxTotalExposurePct * 100).toFixed(0)}%)`);
   console.log('─'.repeat(80));
   console.log('  STRATEGIES:');
   console.log(`    Smart Money:  ${state.smartMoneyTrades} trades | ${state.followedWallets.length} wallets`);
@@ -900,10 +994,12 @@ async function main() {
   // Setup all services
   await setupSwap(sdk);
   await setupOnchain();
+  await monitorMatic();
   await setupBridge(sdk);
   await setupBinanceAnalysis(sdk);
   await analyzeTopWallets(sdk);
   await queryOnchainData(sdk);
+  await refreshExposure(sdk); // P7: seed exposure before strategies start
   await setupSmartMoney(sdk);
   await setupArbitrage(sdk);
   await setupDipArb(sdk);
@@ -911,6 +1007,9 @@ async function main() {
 
   displayStatus();
   setInterval(displayStatus, 60000);
+  // P7/P12: startup checks alone go stale — keep exposure + gas balance fresh
+  setInterval(() => void refreshExposure(sdk), 60000);
+  setInterval(() => void monitorMatic(), 5 * 60 * 1000);
 
   process.on('SIGINT', async () => {
     console.log('\n\nShutting down...');

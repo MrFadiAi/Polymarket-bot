@@ -213,6 +213,150 @@ export function getEffectivePrices(
 }
 
 /**
+ * Fee-aware arbitrage helpers (PROBLEMS.md #1)
+ *
+ * Polymarket fills report `fee_rate_bps` (see TradingService.getTrades()).
+ * Gross price-implied edge must be reduced by taker fees and gas before it
+ * can be treated as a real opportunity.
+ */
+
+/** Default taker fee when the venue reports none (basis points). */
+export const DEFAULT_TAKER_FEE_RATE_BPS = 0;
+
+/**
+ * Estimate taker fee in USDC for a given notional.
+ *
+ * @param notionalUsd - Traded notional in USDC
+ * @param feeRateBps - Fee rate in basis points (e.g. 10 = 0.1%)
+ */
+export function estimateTakerFee(notionalUsd: number, feeRateBps: number): number {
+  if (!Number.isFinite(notionalUsd) || notionalUsd <= 0) return 0;
+  if (!Number.isFinite(feeRateBps) || feeRateBps <= 0) return 0;
+  return (notionalUsd * feeRateBps) / 10_000;
+}
+
+export interface NetArbProfit {
+  /** Gross price-implied profit in USDC */
+  gross: number;
+  /** Estimated taker fees in USDC */
+  fee: number;
+  /** Gas cost in USDC */
+  gas: number;
+  /** Net profit in USDC (gross - fee - gas) */
+  net: number;
+  /** Net profit per unit size */
+  netPerUnit: number;
+}
+
+/**
+ * Net profit for a long arb (buy YES + NO, merge to $1).
+ *
+ * @param longCost - Effective cost per pair (buyYes + buyNo)
+ * @param size - Number of pairs
+ * @param feeRateBps - Taker fee in basis points applied to buy notional
+ * @param gasCostUsd - Estimated gas per arb cycle in USDC
+ */
+export function calculateNetLongArbProfit(
+  longCost: number,
+  size: number,
+  feeRateBps: number = DEFAULT_TAKER_FEE_RATE_BPS,
+  gasCostUsd: number = 0
+): NetArbProfit {
+  const gross = (1 - longCost) * size;
+  const fee = estimateTakerFee(longCost * size, feeRateBps);
+  const gas = Number.isFinite(gasCostUsd) && gasCostUsd > 0 ? gasCostUsd : 0;
+  const net = gross - fee - gas;
+  return { gross, fee, gas, net, netPerUnit: size > 0 ? net / size : 0 };
+}
+
+/**
+ * Net profit for a short arb (sell pre-held YES + NO).
+ *
+ * @param shortRevenue - Effective revenue per pair (sellYes + sellNo)
+ * @param size - Number of pairs
+ * @param feeRateBps - Taker fee in basis points applied to sell notional
+ * @param gasCostUsd - Estimated gas per arb cycle in USDC
+ */
+export function calculateNetShortArbProfit(
+  shortRevenue: number,
+  size: number,
+  feeRateBps: number = DEFAULT_TAKER_FEE_RATE_BPS,
+  gasCostUsd: number = 0
+): NetArbProfit {
+  const gross = (shortRevenue - 1) * size;
+  const fee = estimateTakerFee(shortRevenue * size, feeRateBps);
+  const gas = Number.isFinite(gasCostUsd) && gasCostUsd > 0 ? gasCostUsd : 0;
+  const net = gross - fee - gas;
+  return { gross, fee, gas, net, netPerUnit: size > 0 ? net / size : 0 };
+}
+
+// Orderbook depth type shared by execution-size helpers.
+export interface PriceLevel {
+  price: number;
+  size: number;
+}
+
+export interface ExecutableSize {
+  /** Executable size in shares after safety factor */
+  size: number;
+  /** Volume-weighted average price of the executable depth */
+  vwap: number;
+  /** Whether requested cap price constrained the depth */
+  priceConstrained: boolean;
+}
+
+/**
+ * Aggregate top-of-book depth across multiple levels (PROBLEMS.md #2).
+ *
+ * Replaces level-0-only sizing: walks price levels in order, optionally
+ * stopping at a cap price, and applies a safety factor.
+ *
+ * @param levels - Price levels sorted best-first (asks ascending, bids descending)
+ * @param safetyFactor - Fraction of depth treated as executable (0-1)
+ * @param capPrice - Optional bound: for asks the max acceptable price,
+ *   for bids the min acceptable price
+ * @param isAsk - true when levels are asks (cap = max price), false for bids (cap = min price)
+ * @param maxLevels - Maximum number of levels to consume
+ */
+export function calculateExecutableSize(
+  levels: PriceLevel[],
+  safetyFactor: number = 0.8,
+  capPrice?: number,
+  isAsk: boolean = true,
+  maxLevels: number = 5
+): ExecutableSize {
+  const safeFactor =
+    Number.isFinite(safetyFactor) && safetyFactor > 0
+      ? Math.min(1, safetyFactor)
+      : 0.8;
+  const depth = levels.slice(0, Math.max(1, Math.min(maxLevels, levels.length)));
+  let totalSize = 0;
+  let notional = 0;
+  let priceConstrained = false;
+
+  for (const level of depth) {
+    if (!Number.isFinite(level.price) || !Number.isFinite(level.size) || level.size <= 0) {
+      continue;
+    }
+    if (capPrice !== undefined && Number.isFinite(capPrice)) {
+      if (isAsk && level.price > capPrice) {
+        priceConstrained = true;
+        break;
+      }
+      if (!isAsk && level.price < capPrice) {
+        priceConstrained = true;
+        break;
+      }
+    }
+    totalSize += level.size;
+    notional += level.price * level.size;
+  }
+
+  const size = totalSize * safeFactor;
+  return { size, vwap: totalSize > 0 ? notional / totalSize : 0, priceConstrained };
+}
+
+/**
  * Check if there's an arbitrage opportunity
  *
  * 使用有效价格计算套利机会（正确考虑镜像订单）
@@ -226,22 +370,35 @@ export function getEffectivePrices(
  * @param noAsk - Lowest ask for NO token
  * @param yesBid - Highest bid for YES token
  * @param noBid - Highest bid for NO token
+ * @param opts - Optional fee/gas adjustment (PROBLEMS.md #1). When `size`
+ *   is provided, gross edge must also survive fees + gas at that size.
  * @returns Arbitrage info or null
  */
 export function checkArbitrage(
   yesAsk: number,
   noAsk: number,
   yesBid: number,
-  noBid: number
+  noBid: number,
+  opts: { feeRateBps?: number; gasCostUsd?: number; size?: number } = {}
 ): { type: 'long' | 'short'; profit: number; description: string } | null {
   // 计算有效价格
   const effective = getEffectivePrices(yesAsk, yesBid, noAsk, noBid);
+
+  const feeRateBps = opts.feeRateBps ?? DEFAULT_TAKER_FEE_RATE_BPS;
+  const gasCostUsd = opts.gasCostUsd ?? 0;
+  const size = opts.size ?? 1;
+  const feeAware = feeRateBps > 0 || gasCostUsd > 0;
 
   // Long arbitrage: Buy complete set (YES + NO) cheaper than $1
   const effectiveLongCost = effective.effectiveBuyYes + effective.effectiveBuyNo;
   const longProfit = 1 - effectiveLongCost;
 
   if (longProfit > 0) {
+    // Fee/gas gate: a gross edge that does not survive costs is not an opp.
+    if (feeAware) {
+      const net = calculateNetLongArbProfit(effectiveLongCost, size, feeRateBps, gasCostUsd);
+      if (net.net <= 0) return null;
+    }
     return {
       type: 'long',
       profit: longProfit,
@@ -254,6 +411,10 @@ export function checkArbitrage(
   const shortProfit = effectiveShortRevenue - 1;
 
   if (shortProfit > 0) {
+    if (feeAware) {
+      const net = calculateNetShortArbProfit(effectiveShortRevenue, size, feeRateBps, gasCostUsd);
+      if (net.net <= 0) return null;
+    }
     return {
       type: 'short',
       profit: shortProfit,

@@ -21,6 +21,7 @@ import { CTFClient } from './src/clients/ctf-client.js';
 import { startDashboard, dashboardEmitter } from './src/dashboard/index.js';
 import type { BotState, BotConfig, LogLevel, DipArbSignal, SmartMoneySignal } from './src/dashboard/types.js';
 import { addSession, createSessionFromState, type TradeRecord } from './src/dashboard/session-history.js';
+import { resolvePolygonRpcUrl } from './src/utils/rpc.js';
 
 // ============================================================================
 // CONFIGURATION (same as bot-config.ts)
@@ -740,7 +741,7 @@ async function setupSwap() {
     if (!process.env.POLYMARKET_PRIVATE_KEY) return;
 
     // Create SwapService with signer
-    const provider = new ethers.providers.JsonRpcProvider('https://polygon-rpc.com');
+    const provider = new ethers.providers.JsonRpcProvider(resolvePolygonRpcUrl());
     const signer = new ethers.Wallet(process.env.POLYMARKET_PRIVATE_KEY, provider);
     swapService = new SwapService(signer);
 
@@ -776,7 +777,7 @@ async function setupOnchain() {
 
     const onchain = new OnchainService({
       privateKey: process.env.POLYMARKET_PRIVATE_KEY,
-      rpcUrl: 'https://polygon-rpc.com',
+      rpcUrl: resolvePolygonRpcUrl(),
     });
 
     if (CONFIG.onchain.autoApprove) {

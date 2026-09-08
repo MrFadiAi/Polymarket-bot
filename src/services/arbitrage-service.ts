@@ -31,7 +31,13 @@ import { CTFClient, type TokenIds } from '../clients/ctf-client.js';
 import { GammaApiClient } from '../clients/gamma-api.js';
 import { RateLimiter } from '../core/rate-limiter.js';
 import { createUnifiedCache } from '../core/unified-cache.js';
-import { getEffectivePrices } from '../utils/price-utils.js';
+import {
+  getEffectivePrices,
+  calculateExecutableSize,
+  calculateNetLongArbProfit,
+  calculateNetShortArbProfit,
+} from '../utils/price-utils.js';
+import { resolvePolygonRpcUrl } from '../utils/rpc.js';
 import type { BookUpdate } from '../core/types.js';
 
 // ===== Types =====
@@ -88,6 +94,18 @@ export interface ArbitrageServiceConfig {
   sizeSafetyFactor?: number;
   /** Auto-fix imbalance after failed execution (default: true) */
   autoFixImbalance?: boolean;
+  /** Taker fee in basis points applied to arb notional (default: 0) */
+  feeRateBps?: number;
+  /** Estimated gas cost per arb cycle in USDC (default: 0) */
+  estimatedGasCostUsd?: number;
+  /** Minimum net profit in USDC after fees + gas (default: 0) */
+  minNetProfitUsd?: number;
+  /** Max acceptable slippage vs effective price for order price caps (default: 0.01 = 1%) */
+  maxSlippagePct?: number;
+  /** Orderbook levels consumed for depth sizing (default: 5) */
+  maxDepthLevels?: number;
+  /** Execute YES/NO legs sequentially instead of Promise.all (default: true) */
+  sequentialExecution?: boolean;
 }
 
 export interface RebalanceAction {
@@ -215,6 +233,15 @@ export interface ArbitrageOpportunity {
   recommendedSize: number;
   /** Estimated profit in USDC */
   estimatedProfit: number;
+  /** Net profit in USDC after fees + gas (when configured) */
+  netProfit?: number;
+  /** Worst-price caps sent with market orders (price protection) */
+  priceCaps?: {
+    buyYes: number;
+    buyNo: number;
+    sellYes: number;
+    sellNo: number;
+  };
   /** Description */
   description: string;
   /** Timestamp */
@@ -296,7 +323,7 @@ export class ArbitrageService extends EventEmitter {
 
     this.config = {
       privateKey: config.privateKey,
-      rpcUrl: config.rpcUrl || 'https://polygon-rpc.com',
+      rpcUrl: resolvePolygonRpcUrl(config.rpcUrl),
       profitThreshold: config.profitThreshold ?? 0.005,
       minTradeSize: config.minTradeSize ?? 5,
       maxTradeSize: config.maxTradeSize ?? 100,
@@ -315,6 +342,13 @@ export class ArbitrageService extends EventEmitter {
       // Execution safety
       sizeSafetyFactor: config.sizeSafetyFactor ?? 0.8,
       autoFixImbalance: config.autoFixImbalance ?? true,
+      // Fee-aware + price-protected execution (PROBLEMS.md #1/#2)
+      feeRateBps: config.feeRateBps ?? 0,
+      estimatedGasCostUsd: config.estimatedGasCostUsd ?? 0,
+      minNetProfitUsd: config.minNetProfitUsd ?? 0,
+      maxSlippagePct: config.maxSlippagePct ?? 0.01,
+      maxDepthLevels: config.maxDepthLevels ?? 5,
+      sequentialExecution: config.sequentialExecution ?? true,
     };
 
     this.rateLimiter = new RateLimiter();
@@ -507,18 +541,38 @@ export class ArbitrageService extends EventEmitter {
     const shortRevenue = effective.effectiveSellYes + effective.effectiveSellNo;
     const shortProfit = shortRevenue - 1;
 
-    // Calculate sizes with safety factor to prevent partial fills
-    // Use min of both sides * safety factor to ensure both orders can fill
+    // Calculate sizes with safety factor to prevent partial fills.
+    // Aggregate across top orderbook levels (not just level 0) so a thin
+    // best quote cannot justify the full size (PROBLEMS.md #2).
     const safetyFactor = this.config.sizeSafetyFactor;
-    const orderbookLongSize = Math.min(yesAsks[0]?.size || 0, noAsks[0]?.size || 0) * safetyFactor;
-    const orderbookShortSize = Math.min(yesBids[0]?.size || 0, noBids[0]?.size || 0) * safetyFactor;
+    const maxLevels = this.config.maxDepthLevels;
+    const slippage = this.config.maxSlippagePct;
+    const feeRateBps = this.config.feeRateBps;
+    const gasCostUsd = this.config.estimatedGasCostUsd;
+    const minNetProfitUsd = this.config.minNetProfitUsd;
+
+    // Worst-price caps sent with market orders (price protection).
+    const buyYesCap = effective.effectiveBuyYes * (1 + slippage);
+    const buyNoCap = effective.effectiveBuyNo * (1 + slippage);
+    const sellYesFloor = effective.effectiveSellYes * (1 - slippage);
+    const sellNoFloor = effective.effectiveSellNo * (1 - slippage);
+    const priceCaps = { buyYes: buyYesCap, buyNo: buyNoCap, sellYes: sellYesFloor, sellNo: sellNoFloor };
+
+    const yesAskDepth = calculateExecutableSize(yesAsks, safetyFactor, buyYesCap, true, maxLevels);
+    const noAskDepth = calculateExecutableSize(noAsks, safetyFactor, buyNoCap, true, maxLevels);
+    const yesBidDepth = calculateExecutableSize(yesBids, safetyFactor, sellYesFloor, false, maxLevels);
+    const noBidDepth = calculateExecutableSize(noBids, safetyFactor, sellNoFloor, false, maxLevels);
+    const orderbookLongSize = Math.min(yesAskDepth.size, noAskDepth.size);
+    const orderbookShortSize = Math.min(yesBidDepth.size, noBidDepth.size);
     const heldPairs = Math.min(this.balance.yesTokens, this.balance.noTokens);
     const balanceLongSize = longCost > 0 ? this.balance.usdc / longCost : 0;
 
-    // Check long arb
+    // Check long arb (fee-aware: gross edge must survive fees + gas)
     if (longProfit > this.config.profitThreshold) {
       const maxSize = Math.min(orderbookLongSize, balanceLongSize * safetyFactor, this.config.maxTradeSize);
       if (maxSize >= this.config.minTradeSize) {
+        const net = calculateNetLongArbProfit(longCost, maxSize, feeRateBps, gasCostUsd);
+        if (net.net < minNetProfitUsd) return null;
         return {
           type: 'long',
           profitRate: longProfit,
@@ -533,16 +587,20 @@ export class ArbitrageService extends EventEmitter {
           maxBalanceSize: balanceLongSize,
           recommendedSize: maxSize,
           estimatedProfit: longProfit * maxSize,
+          netProfit: net.net,
+          priceCaps,
           description: `Buy YES @ ${effective.effectiveBuyYes.toFixed(4)} + NO @ ${effective.effectiveBuyNo.toFixed(4)}, Merge for $1`,
           timestamp: Date.now(),
         };
       }
     }
 
-    // Check short arb
+    // Check short arb (fee-aware)
     if (shortProfit > this.config.profitThreshold) {
       const maxSize = Math.min(orderbookShortSize, heldPairs, this.config.maxTradeSize);
       if (maxSize >= this.config.minTradeSize && heldPairs >= this.config.minTokenReserve) {
+        const net = calculateNetShortArbProfit(shortRevenue, maxSize, feeRateBps, gasCostUsd);
+        if (net.net < minNetProfitUsd) return null;
         return {
           type: 'short',
           profitRate: shortProfit,
@@ -557,6 +615,8 @@ export class ArbitrageService extends EventEmitter {
           maxBalanceSize: heldPairs,
           recommendedSize: maxSize,
           estimatedProfit: shortProfit * maxSize,
+          netProfit: net.net,
+          priceCaps,
           description: `Sell YES @ ${effective.effectiveSellYes.toFixed(4)} + NO @ ${effective.effectiveSellNo.toFixed(4)}`,
           timestamp: Date.now(),
         };
@@ -1333,22 +1393,34 @@ export class ArbitrageService extends EventEmitter {
 
     try {
       if (imbalance > 0) {
+        // Sell excess YES with a floor derived from the live best bid so the
+        // remediation itself cannot sweep the book (PROBLEMS.md #2).
+        const bestYesBid = this.orderbook.yesBids[0]?.price;
+        const yesFloor = bestYesBid !== undefined
+          ? bestYesBid * (1 - this.config.maxSlippagePct)
+          : undefined;
         // Sell excess YES
         const result = await this.tradingService.createMarketOrder({
           tokenId: this.market.yesTokenId,
           side: 'SELL',
           amount: sellAmount,
+          ...(yesFloor !== undefined ? { price: yesFloor } : {}),
           orderType: 'FOK',
         });
         if (result.success) {
           this.log(`   ✅ Sold ${sellAmount.toFixed(2)} excess YES to restore balance`);
         }
       } else {
+        const bestNoBid = this.orderbook.noBids[0]?.price;
+        const noFloor = bestNoBid !== undefined
+          ? bestNoBid * (1 - this.config.maxSlippagePct)
+          : undefined;
         // Sell excess NO
         const result = await this.tradingService.createMarketOrder({
           tokenId: this.market.noTokenId,
           side: 'SELL',
           amount: sellAmount,
+          ...(noFloor !== undefined ? { price: noFloor } : {}),
           orderType: 'FOK',
         });
         if (result.success) {
@@ -1410,40 +1482,55 @@ export class ArbitrageService extends EventEmitter {
         };
       }
 
-      // Buy both tokens in parallel
-      this.log(`  1. Buying tokens in parallel...`);
-      const [buyYesResult, buyNoResult] = await Promise.all([
-        this.tradingService!.createMarketOrder({
-          tokenId: this.market!.yesTokenId,
-          side: 'BUY',
-          amount: size * buyYes,
-          orderType: 'FOK',
-        }),
-        this.tradingService!.createMarketOrder({
-          tokenId: this.market!.noTokenId,
-          side: 'BUY',
-          amount: size * buyNo,
-          orderType: 'FOK',
-        }),
-      ]);
-
-      const outcomes = this.market!.outcomes || ['YES', 'NO'];
-      this.log(`     ${outcomes[0]}: ${buyYesResult.success ? '✓' : '✗'}, ${outcomes[1]}: ${buyNoResult.success ? '✓' : '✗'}`);
-
-      // If one succeeded and the other failed, we have an imbalance - fix it
-      if (!buyYesResult.success || !buyNoResult.success) {
-        // Check if partial execution created imbalance
-        if (buyYesResult.success !== buyNoResult.success) {
-          this.log(`  ⚠️ Partial execution detected - attempting to fix imbalance...`);
-          await this.fixImbalanceIfNeeded();
-        }
+      // Buy both legs sequentially with worst-price caps (PROBLEMS.md #2/#3).
+      // Sequential execution avoids the Promise.all dual-fill race: if the
+      // second leg fails we hold only one side and unwind it immediately
+      // instead of racing two fills. Caps are passed as `price` so the
+      // venue rejects fills beyond max slippage instead of sweeping the book.
+      const buyYesCap = opportunity.priceCaps?.buyYes ?? buyYes * (1 + this.config.maxSlippagePct);
+      const buyNoCap = opportunity.priceCaps?.buyNo ?? buyNo * (1 + this.config.maxSlippagePct);
+      this.log(`  1. Buying legs sequentially (caps YES=${buyYesCap.toFixed(4)}, NO=${buyNoCap.toFixed(4)})...`);
+      const buyYesResult = await this.tradingService!.createMarketOrder({
+        tokenId: this.market!.yesTokenId,
+        side: 'BUY',
+        amount: size * buyYes,
+        price: buyYesCap,
+        orderType: 'FOK',
+      });
+      if (!buyYesResult.success) {
         return {
           success: false,
           type: 'long',
           size,
           profit: 0,
           txHashes,
-          error: `Order(s) failed: YES=${buyYesResult.errorMsg}, NO=${buyNoResult.errorMsg}`,
+          error: `Leg 1 (YES) failed: ${buyYesResult.errorMsg}`,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+      const buyNoResult = await this.tradingService!.createMarketOrder({
+        tokenId: this.market!.noTokenId,
+        side: 'BUY',
+        amount: size * buyNo,
+        price: buyNoCap,
+        orderType: 'FOK',
+      });
+
+      const outcomes = this.market!.outcomes || ['YES', 'NO'];
+      this.log(`     ${outcomes[0]}: ${buyYesResult.success ? '✓' : '✗'}, ${outcomes[1]}: ${buyNoResult.success ? '✓' : '✗'}`);
+
+      // Sequential legs: only the second leg can fail here (first leg
+      // returned early above). Unwind the single-sided fill immediately.
+      if (!buyNoResult.success) {
+        this.log(`  ⚠️ Leg 2 (NO) failed after YES filled - unwinding single-sided position...`);
+        await this.fixImbalanceIfNeeded();
+        return {
+          success: false,
+          type: 'long',
+          size,
+          profit: 0,
+          txHashes,
+          error: `Leg 2 (NO) failed: ${buyNoResult.errorMsg}`,
           executionTimeMs: Date.now() - startTime,
         };
       }
@@ -1472,6 +1559,16 @@ export class ArbitrageService extends EventEmitter {
 
           const profit = opportunity.profitRate * mergeSize;
           this.log(`  ✅ Long Arb completed! Profit: ~$${profit.toFixed(2)}`);
+
+          // Post-fill reconciliation (PROBLEMS.md #10): a "successful" merge
+          // can still leave excess single-sided tokens when fills were
+          // uneven. Refresh balances and unwind any remainder above threshold.
+          await this.updateBalance();
+          const residual = this.balance.yesTokens - this.balance.noTokens;
+          if (Math.abs(residual) > this.config.imbalanceThreshold) {
+            this.log(`  ⚠️ Residual imbalance after merge: ${residual.toFixed(2)} - cleaning up...`);
+            await this.fixImbalanceIfNeeded();
+          }
 
           return {
             success: true,
@@ -1539,48 +1636,67 @@ export class ArbitrageService extends EventEmitter {
         };
       }
 
-      // Sell both tokens in parallel
-      this.log(`  1. Selling pre-held tokens in parallel...`);
-      const [sellYesResult, sellNoResult] = await Promise.all([
-        this.tradingService!.createMarketOrder({
-          tokenId: this.market!.yesTokenId,
-          side: 'SELL',
-          amount: size,
-          orderType: 'FOK',
-        }),
-        this.tradingService!.createMarketOrder({
-          tokenId: this.market!.noTokenId,
-          side: 'SELL',
-          amount: size,
-          orderType: 'FOK',
-        }),
-      ]);
-
-      const outcomes = this.market!.outcomes || ['YES', 'NO'];
-      this.log(`     ${outcomes[0]}: ${sellYesResult.success ? '✓' : '✗'}, ${outcomes[1]}: ${sellNoResult.success ? '✓' : '✗'}`);
-
-      // If one succeeded and the other failed, we have an imbalance
-      if (!sellYesResult.success || !sellNoResult.success) {
-        // Check if partial execution created imbalance
-        if (sellYesResult.success !== sellNoResult.success) {
-          this.log(`  ⚠️ Partial execution detected - imbalance created`);
-          // Note: For short arb, we just sold one side, creating imbalance
-          // The rebalancer will fix this on next cycle
-          await this.fixImbalanceIfNeeded();
-        }
+      // Sell both legs sequentially with floor prices (PROBLEMS.md #2/#3).
+      const sellYesFloor = opportunity.priceCaps?.sellYes
+        ?? opportunity.effectivePrices.sellYes * (1 - this.config.maxSlippagePct);
+      const sellNoFloor = opportunity.priceCaps?.sellNo
+        ?? opportunity.effectivePrices.sellNo * (1 - this.config.maxSlippagePct);
+      this.log(`  1. Selling pre-held legs sequentially (floors YES=${sellYesFloor.toFixed(4)}, NO=${sellNoFloor.toFixed(4)})...`);
+      const sellYesResult = await this.tradingService!.createMarketOrder({
+        tokenId: this.market!.yesTokenId,
+        side: 'SELL',
+        amount: size,
+        price: sellYesFloor,
+        orderType: 'FOK',
+      });
+      if (!sellYesResult.success) {
         return {
           success: false,
           type: 'short',
           size,
           profit: 0,
           txHashes,
-          error: `Order(s) failed: YES=${sellYesResult.errorMsg}, NO=${sellNoResult.errorMsg}`,
+          error: `Leg 1 (YES) failed: ${sellYesResult.errorMsg}`,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+      const sellNoResult = await this.tradingService!.createMarketOrder({
+        tokenId: this.market!.noTokenId,
+        side: 'SELL',
+        amount: size,
+        price: sellNoFloor,
+        orderType: 'FOK',
+      });
+
+      const outcomes = this.market!.outcomes || ['YES', 'NO'];
+      this.log(`     ${outcomes[0]}: ${sellYesResult.success ? '✓' : '✗'}, ${outcomes[1]}: ${sellNoResult.success ? '✓' : '✗'}`);
+
+      // Sequential legs: only the second leg can fail here. Reconcile
+      // immediately instead of waiting for the next rebalancer cycle.
+      if (!sellNoResult.success) {
+        this.log(`  ⚠️ Leg 2 (NO) failed after YES sold - reconciling...`);
+        await this.fixImbalanceIfNeeded();
+        return {
+          success: false,
+          type: 'short',
+          size,
+          profit: 0,
+          txHashes,
+          error: `Leg 2 (NO) failed: ${sellNoResult.errorMsg}`,
           executionTimeMs: Date.now() - startTime,
         };
       }
 
       const profit = opportunity.profitRate * size;
       this.log(`  ✅ Short Arb completed! Profit: ~$${profit.toFixed(2)}`);
+
+      // Post-fill reconciliation (PROBLEMS.md #10).
+      await this.updateBalance();
+      const residual = this.balance.yesTokens - this.balance.noTokens;
+      if (Math.abs(residual) > this.config.imbalanceThreshold) {
+        this.log(`  ⚠️ Residual imbalance after short arb: ${residual.toFixed(2)} - cleaning up...`);
+        await this.fixImbalanceIfNeeded();
+      }
 
       return {
         success: true,

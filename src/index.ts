@@ -450,6 +450,8 @@ export class PolymarketSDK {
       {},  // default config
       this.dataApi  // pass dataApi for report generation
     );
+    // P5: attach live orderbook source so copy-trading spread/premium guards run
+    this.smartMoney.setMarketService(this.markets);
 
     // Initialize DipArbService
     this.dipArb = new DipArbService(

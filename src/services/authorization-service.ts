@@ -11,6 +11,7 @@
  */
 
 import { ethers } from 'ethers';
+import { resolvePolygonRpcUrl } from '../utils/rpc.js';
 import {
   CTF_CONTRACT,
   NEG_RISK_CTF_EXCHANGE,
@@ -110,7 +111,7 @@ export class AuthorizationService {
 
   constructor(signer: ethers.Wallet, config: AuthorizationServiceConfig = {}) {
     this.signer = signer;
-    this.provider = config.provider || signer.provider || new ethers.providers.JsonRpcProvider('https://polygon-rpc.com');
+    this.provider = config.provider || signer.provider || new ethers.providers.JsonRpcProvider(resolvePolygonRpcUrl());
   }
 
   /**

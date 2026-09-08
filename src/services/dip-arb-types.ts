@@ -80,9 +80,23 @@ export interface DipArbServiceConfig {
   /**
    * Leg1 成交后等待 Leg2 的最大时间（秒）
    * 超时后放弃当前轮次
-   * @default 300
+   * @default 60 (shortened from 180 to bound unhedged exposure — PROBLEMS.md #4)
    */
   leg2TimeoutSeconds?: number;
+
+  /**
+   * Leg1 止损比例：Leg1 持仓相对买入价下跌超过此比例时提前退出，
+   * 避免拖到超时变成无法退出的 dust（PROBLEMS.md #4）。
+   * 0.20 = 20%
+   * @default 0.20
+   */
+  stopLossPct?: number;
+
+  /**
+   * Taker fee in basis points applied to leg cost estimates (PROBLEMS.md #1).
+   * @default 0
+   */
+  feeRateBps?: number;
 
   /**
    * 启用暴涨检测
@@ -170,7 +184,9 @@ export const DEFAULT_DIP_ARB_CONFIG: DipArbConfigInternal = {
   slidingWindowMs: 3000,  // 3秒滑动窗口 - 核心参数！
   maxSlippage: 0.02,
   minProfitRate: 0.03,
-  leg2TimeoutSeconds: 180,  // ✅ 缩短到 3 分钟，更快退出未对冲仓位
+  leg2TimeoutSeconds: 60,  // ✅ 缩短到 60 秒，限制未对冲敞口时间 (PROBLEMS.md #4)
+  stopLossPct: 0.20,        // ✅ Leg1 持仓下跌 20% 提前止损，避免变成 dust
+  feeRateBps: 0,            // ✅ Taker fee (bps) 计入 Leg 成本估算
   enableSurge: true,
   surgeThreshold: 0.15,
   autoMerge: true,

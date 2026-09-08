@@ -19,6 +19,7 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "backtest": "tsx src/backtest/runner.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "example:basic": "tsx examples/01-basic-usage.ts",
     "example:smart-money": "tsx examples/02-smart-money.ts",
