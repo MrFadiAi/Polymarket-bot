@@ -93,13 +93,21 @@ Fix order (dependencies first): #2 → #4 → #1 → #3-DipArb → #5 → #6.
   At rest = 0.02 × $250 = $5, identical to the old fixed size.
 - Verified: 143/143 tests, tsc clean.
 
-## #6 — Zero on-chain PnL reconciliation ❌
+## #6 — Zero on-chain PnL reconciliation ✅ FIXED (2026-09-09, uncommitted)
 
-- PnL tracked in-memory only. Closest existing piece: `refreshExposure`
-  (exposure, not PnL).
-- Fix: periodic job comparing tracked PnL vs on-chain USDC balance delta,
-  log/pause on drift. Needs a baseline-balance concept (decide: since bot
-  start vs since day start).
+- Baseline decision: SINCE BOT START (`state.totalPnL` is session-scoped,
+  no day-boundary complexity).
+- New pure `checkPnlDrift` in `src/utils/risk.ts`: |(liquid + open exposure)
+  − (baseline + tracked)| vs max($tol, %tol); fail-open on bad data
+  (a monitor must never halt on NaN). + 4 tests in `risk.test.ts`.
+- `bot-config.ts`: `pnlBaselineUsdcE` anchored at startup from onchain
+  balances; `reconcilePnl()` every 5min (liquid USDC.e + chain-seeded
+  exposure vs baseline + totalPnL); breach → WARN + 30m pause.
+  Tolerances: $5 / 2% (`CONFIG.risk.maxPnlDriftUsd/Pct`).
+- Caveat (documented at call site): mid-session deposits/withdrawals look
+  like drift — restart to rebaseline. Dashboard entry mirror left as
+  follow-up (same pattern as #2's dipArb/direct notes).
+- Verified: 147/147 tests, tsc clean.
 
 ## #7 — Zero real arb opportunities in testing (observation, no fix needed)
 

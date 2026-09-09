@@ -9,6 +9,7 @@ import {
   evaluateWalletQuality,
   computeWalletQualityFromPositions,
   checkExposure,
+  checkPnlDrift,
 } from './risk.js';
 
 const LIMITS = {
@@ -179,5 +180,39 @@ describe('checkExposure', () => {
     const r = checkExposure(100, 250, 0.3);
     expect(r.allowed).toBe(false);
     expect(r.usagePct).toBeCloseTo(0.4, 10);
+  });
+});
+
+describe('checkPnlDrift', () => {
+  const base = {
+    baselineUsdcE: 250,
+    trackedPnl: 10,
+    liquidUsdcE: 240,
+    openExposureUsd: 20,
+    maxDriftUsd: 5,
+    maxDriftPct: 0.02,
+  };
+
+  it('passes when account value matches baseline + tracked PnL', () => {
+    // 240 + 20 = 260 = 250 + 10
+    expect(checkPnlDrift(base)).toEqual({ drift: 0, breached: false });
+  });
+
+  it('breaches when drift exceeds tolerance', () => {
+    // actual 230 vs expected 260 → drift 30 > max(5, 5)
+    const r = checkPnlDrift({ ...base, liquidUsdcE: 210 });
+    expect(r.drift).toBeCloseTo(30, 10);
+    expect(r.breached).toBe(true);
+  });
+
+  it('uses the relative tolerance when it dominates', () => {
+    // tol = max(5, 250*0.02=5); drift 5.01 breaches
+    const r = checkPnlDrift({ ...base, liquidUsdcE: 234.99 });
+    expect(r.breached).toBe(true);
+  });
+
+  it('fails open on non-finite inputs', () => {
+    const r = checkPnlDrift({ ...base, liquidUsdcE: NaN });
+    expect(r).toEqual({ drift: 0, breached: false });
   });
 });

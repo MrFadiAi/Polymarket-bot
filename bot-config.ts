@@ -39,6 +39,7 @@ import {
   evaluateWalletQuality,
   computeWalletQualityFromPositions,
   checkExposure,
+  checkPnlDrift,
   toWalletQualityGate,
   type PreExecutionGuard,
   type RiskIntent,
@@ -81,6 +82,10 @@ const CONFIG = {
     maxPositionPct: 0.05,  // 5% maximum
     lossSizingReduction: 0.20,  // Reduce 20% per consecutive loss
     winSizingIncrease: 0.10,  // Increase 10% per consecutive win
+
+    // 🔴 AUDIT #6: on-chain PnL reconciliation vs session baseline
+    maxPnlDriftUsd: 5,  // Absolute drift tolerance
+    maxPnlDriftPct: 0.02,  // Relative tolerance (fraction of baseline)
   },
 
   smartMoney: {
@@ -213,6 +218,9 @@ interface BotState {
   usdcEBalance: number;
   maticBalance: number;
 
+  // 🔴 AUDIT #6: session baseline for on-chain PnL reconciliation (null = off)
+  pnlBaselineUsdcE: number | null;
+
   // Analysis
   btcTrend: 'up' | 'down' | 'neutral';
   ethTrend: 'up' | 'down' | 'neutral';
@@ -253,6 +261,7 @@ const state: BotState = {
   usdcBalance: 0,
   usdcEBalance: 0,
   maticBalance: 0,
+  pnlBaselineUsdcE: null,
   totalExposureUsd: 0,
   perMarketExposureUsd: {},
   btcTrend: 'neutral',
@@ -500,6 +509,36 @@ async function monitorMatic() {
   }
 }
 
+// 🔴 AUDIT #6: periodic on-chain PnL reconciliation. Compares account value
+// (liquid USDC.e + open exposure) against baseline + tracked realized PnL.
+// Mid-session deposits/withdrawals look like drift — restart to rebaseline.
+async function reconcilePnl() {
+  if (!onchainService || CONFIG.dryRun || state.pnlBaselineUsdcE === null) return;
+  try {
+    const balances = await onchainService.getTokenBalances();
+    const liquid = parseFloat(balances.usdcE);
+    if (!Number.isFinite(liquid)) return;
+    state.usdcEBalance = liquid;
+    const { drift, breached } = checkPnlDrift({
+      baselineUsdcE: state.pnlBaselineUsdcE,
+      trackedPnl: state.totalPnL,
+      liquidUsdcE: liquid,
+      openExposureUsd: state.totalExposureUsd,
+      maxDriftUsd: CONFIG.risk.maxPnlDriftUsd,
+      maxDriftPct: CONFIG.risk.maxPnlDriftPct,
+    });
+    if (breached) {
+      log('WARN', `🔴 PnL drift $${drift.toFixed(2)} exceeds tolerance — tracked $${state.totalPnL.toFixed(2)} vs on-chain $${(liquid + state.totalExposureUsd - state.pnlBaselineUsdcE).toFixed(2)} — pausing 30m (restart to rebaseline after deposits/withdrawals)`);
+      state.isPaused = true;
+      state.pauseUntil = Date.now() + 30 * 60 * 1000;
+    } else {
+      log('CHAIN', `PnL reconciled: drift $${drift.toFixed(2)} within tolerance`);
+    }
+  } catch (err) {
+    log('WARN', `PnL reconcile failed: ${(err as Error).message}`);
+  }
+}
+
 // ============================================================================
 // 1. SMART MONEY STRATEGY
 // ============================================================================
@@ -698,6 +737,11 @@ async function setupOnchain() {
 
     state.usdcEBalance = parseFloat(status.usdcEBalance);
     state.maticBalance = parseFloat(status.maticBalance);
+    // 🔴 AUDIT #6: anchor the reconciliation baseline at startup.
+    if (Number.isFinite(state.usdcEBalance)) {
+      state.pnlBaselineUsdcE = state.usdcEBalance;
+      log('CHAIN', `PnL baseline anchored: $${state.pnlBaselineUsdcE!.toFixed(2)} USDC.e`);
+    }
 
     if (!status.ready && CONFIG.onchain.autoApprove) {
       log('CHAIN', 'Setting up approvals...');
@@ -1005,6 +1049,7 @@ async function main() {
   // P7/P12: startup checks alone go stale — keep exposure + gas balance fresh
   setInterval(() => void refreshExposure(sdk), 60000);
   setInterval(() => void monitorMatic(), 5 * 60 * 1000);
+  setInterval(() => void reconcilePnl(), 5 * 60 * 1000);
 
   process.on('SIGINT', async () => {
     console.log('\n\nShutting down...');

@@ -221,6 +221,39 @@ export function checkExposure(
   return { allowed: usagePct <= maxTotalExposurePct, usagePct };
 }
 
+export interface PnlReconciliation {
+  /** Liquid USDC.e at bot start (session baseline). */
+  baselineUsdcE: number;
+  /** Cumulative tracked PnL since start (recordTrade sum). */
+  trackedPnl: number;
+  /** Current liquid USDC.e on-chain. */
+  liquidUsdcE: number;
+  /** Current open-position value (chain-seeded exposure). */
+  openExposureUsd: number;
+  /** Absolute drift tolerance in USD. */
+  maxDriftUsd: number;
+  /** Relative drift tolerance as a fraction of |baseline|. */
+  maxDriftPct: number;
+}
+
+/**
+ * On-chain PnL reconciliation (AUDIT #6).
+ *
+ * Identity (ignoring deposits/withdrawals): liquid + open exposure should
+ * equal baseline + tracked realized PnL. Deposits/withdrawals mid-session
+ * look like drift — the operator rebaselines by restarting. Fail-open on
+ * non-finite inputs: a monitor must never halt trading on bad data.
+ */
+export function checkPnlDrift(r: PnlReconciliation): { drift: number; breached: boolean } {
+  const vals = [r.baselineUsdcE, r.trackedPnl, r.liquidUsdcE, r.openExposureUsd, r.maxDriftUsd, r.maxDriftPct];
+  if (!vals.every(Number.isFinite)) return { drift: 0, breached: false };
+  const expected = r.baselineUsdcE + r.trackedPnl;
+  const actual = r.liquidUsdcE + r.openExposureUsd;
+  const drift = Math.abs(actual - expected);
+  const tol = Math.max(r.maxDriftUsd, Math.abs(r.baselineUsdcE) * r.maxDriftPct);
+  return { drift, breached: drift > tol };
+}
+
 /**
  * Pre-execution risk intent passed from a strategy to the app-layer guard
  * (audit #4 fix). Services stay decoupled from bot state: they describe what
