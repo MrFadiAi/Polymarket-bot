@@ -114,3 +114,70 @@ export function makerTakerOverlap(trades: PolyTrade[]): BothSides[] {
   }
   return out.sort((a, b) => b.makerFills + b.takerFills - (a.makerFills + a.takerFills));
 }
+
+export interface MakerPairBuy {
+  maker: string;
+  market_id: string;
+  /** Non-overlapping windows where both sides were bought. */
+  windows: number;
+  bestPairCost: number;
+  notionalUsd: number;
+}
+
+/**
+ * Maker-side arb footprint: per (maker, market), greedy non-overlapping
+ * windows (default 60s) in which the maker BOUGHT both outcome sides with
+ * combined VWAP cost <= `maxPairCost` (default $1 — a sub-$1 YES+NO pair
+ * is the long-arb shape). Ranks makers by pair-window count.
+ */
+export function makerPairBuys(
+  trades: PolyTrade[],
+  opts: { windowMs?: number; maxPairCost?: number } = {}
+): MakerPairBuy[] {
+  const windowMs = opts.windowMs ?? 60_000;
+  const maxPairCost = opts.maxPairCost ?? 1;
+  const groups = new Map<string, PolyTrade[]>();
+  for (const t of trades) {
+    if (t.maker_direction !== 'BUY') continue;
+    const k = `${t.maker}|${t.market_id}`;
+    const g = groups.get(k);
+    if (g) g.push(t);
+    else groups.set(k, [t]);
+  }
+  const out: MakerPairBuy[] = [];
+  for (const [key, fills] of groups) {
+    fills.sort((a, b) => a.ts - b.ts);
+    const [maker, market_id] = key.split('|');
+    let windows = 0;
+    let bestPairCost = Number.POSITIVE_INFINITY;
+    let notionalUsd = 0;
+    let i = 0;
+    while (i < fills.length) {
+      const sides = new Map<string, { qty: number; notion: number }>();
+      let j = i;
+      while (j < fills.length && fills[j].ts - fills[i].ts <= windowMs) {
+        const s = sides.get(fills[j].nonusdc_side) ?? { qty: 0, notion: 0 };
+        s.qty += fills[j].token_amount;
+        s.notion += fills[j].price * fills[j].token_amount;
+        sides.set(fills[j].nonusdc_side, s);
+        j++;
+      }
+      if (sides.size >= 2) {
+        const costs = [...sides.values()].map((s) => s.notion / s.qty);
+        const pairCost = costs[0] + costs[1];
+        if (pairCost <= maxPairCost) {
+          windows++;
+          if (pairCost < bestPairCost) bestPairCost = pairCost;
+          notionalUsd += [...sides.values()].reduce((s, v) => s + v.notion, 0);
+          i = j;
+          continue;
+        }
+      }
+      i++;
+    }
+    if (windows > 0) {
+      out.push({ maker, market_id, windows, bestPairCost, notionalUsd });
+    }
+  }
+  return out.sort((a, b) => b.windows - a.windows || b.notionalUsd - a.notionalUsd);
+}

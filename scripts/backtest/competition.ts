@@ -11,7 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import { parsePolyTradesCsv } from '../../src/backtest/smart-money.js';
-import { takerConcentration, repeatTakers, makerTakerOverlap } from '../../src/backtest/competition.js';
+import { takerConcentration, repeatTakers, makerTakerOverlap, makerPairBuys } from '../../src/backtest/competition.js';
 
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const flag = (name: string): string | undefined => {
@@ -50,6 +50,10 @@ console.log(
         .slice(0, top),
       repeatTakers: repeatTakers(trades, set, minMarkets).slice(0, top),
       makerTakerOverlap: makerTakerOverlap(trades).slice(0, top),
+      makerPairBuys: makerPairBuys(trades, {
+        windowMs: Number(flag('--pair-window-ms') ?? 60_000),
+        maxPairCost: Number(flag('--max-pair-cost') ?? 1),
+      }).slice(0, top),
     },
     null,
     2

@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'node:fs';
 import { longArbStrategy, parseSnapshotsJsonl, runBacktest } from './replay.js';
-import { scanArbAvailability } from './availability.js';
+import { scanArbAvailability, fokFillRates } from './availability.js';
 
 const file = process.argv[2];
 if (!file) {
@@ -50,6 +50,7 @@ console.log(
         avgEdge: availability.avgEdge,
         maxEdge: availability.maxEdge,
       },
+      fokFillRates: fokFillRates(snapshots),
       sample: trades.slice(0, 5),
     },
     null,

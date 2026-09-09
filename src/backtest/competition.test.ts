@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parsePolyTradesCsv } from './smart-money.js';
-import { takerConcentration, repeatTakers, makerTakerOverlap } from './competition.js';
+import { takerConcentration, repeatTakers, makerTakerOverlap, makerPairBuys } from './competition.js';
 
 const HEADER =
   'timestamp,market_id,maker,taker,nonusdc_side,maker_direction,taker_direction,price,usd_amount,token_amount,transactionHash';
@@ -57,6 +57,49 @@ describe('repeatTakers', () => {
   });
 });
 
+function siderow(
+  ts: string,
+  mkt: string,
+  maker: string,
+  side: string,
+  dir: string,
+  price: number,
+  qty: number
+): string {
+  return `${ts},${mkt},${maker},0xt,${side},${dir},${dir === 'BUY' ? 'SELL' : 'BUY'},${price},${price * qty},${qty},0xh`;
+}
+
+describe('makerPairBuys', () => {
+  it('flags sub-$1 YES+NO pair buys within the window', () => {
+    const trades = parsePolyTradesCsv(
+      [
+        HEADER,
+        siderow(T, 'm1', '0xarb', 'token1', 'BUY', 0.4, 100),
+        siderow('2026-01-01T00:00:30Z', 'm1', '0xarb', 'token2', 'BUY', 0.5, 100),
+        // second window, over-cost pair -> ignored
+        siderow('2026-01-01T00:05:00Z', 'm1', '0xarb', 'token1', 'BUY', 0.6, 100),
+        siderow('2026-01-01T00:05:30Z', 'm1', '0xarb', 'token2', 'BUY', 0.6, 100),
+      ].join('\n')
+    );
+    const pairs = makerPairBuys(trades);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ maker: '0xarb', market_id: 'm1', windows: 1 });
+    expect(pairs[0].bestPairCost).toBeCloseTo(0.9, 10);
+    expect(pairs[0].notionalUsd).toBeCloseTo(90, 10);
+  });
+
+  it('ignores sells and single-sided flows', () => {
+    const trades = parsePolyTradesCsv(
+      [
+        HEADER,
+        siderow(T, 'm1', '0xa', 'token1', 'BUY', 0.4, 100),
+        siderow(T, 'm1', '0xa', 'token1', 'SELL', 0.5, 100),
+        siderow(T, 'm1', '0xb', 'token2', 'BUY', 0.5, 100),
+      ].join('\n')
+    );
+    expect(makerPairBuys(trades)).toHaveLength(0);
+  });
+});
 describe('makerTakerOverlap', () => {
   it('finds wallets on both sides', () => {
     const trades = parsePolyTradesCsv(

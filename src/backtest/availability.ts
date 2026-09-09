@@ -8,6 +8,7 @@
  */
 
 import { getEffectivePrices } from '../utils/price-utils.js';
+import { ladderSize } from './replay.js';
 import type { BacktestSnapshot } from './types.js';
 
 export interface ArbWindow {
@@ -92,4 +93,45 @@ export function scanArbAvailability(
     avgEdge: edgeSnapshots > 0 ? edgeSum / edgeSnapshots : 0,
     maxEdge,
   };
+}
+
+export interface FokFillRate {
+  sizeShares: number;
+  snapshots: number;
+  pairFillable: number;
+  fillRate: number;
+}
+
+export const DEFAULT_FOK_SIZES = [5, 10, 25, 50, 100];
+
+/**
+ * FOK pair-fill rates: for each size, the fraction of depth-carrying
+ * snapshots whose BOTH ask ladders rest at least `size` shares — i.e. how
+ * often a YES+NO pair FOK of that size would have filled entirely.
+ * Snapshots without ladders are excluded (touch-only books can't answer it).
+ */
+export function fokFillRates(
+  snapshots: BacktestSnapshot[],
+  sizesShares: number[] = DEFAULT_FOK_SIZES
+): FokFillRate[] {
+  const withLevels = snapshots.filter(
+    (s) => (s.levels?.yesAsks?.length ?? 0) > 0 && (s.levels?.noAsks?.length ?? 0) > 0
+  );
+  return sizesShares.map((sizeShares) => {
+    let pairFillable = 0;
+    for (const s of withLevels) {
+      if (
+        ladderSize(s.levels!.yesAsks) >= sizeShares &&
+        ladderSize(s.levels!.noAsks) >= sizeShares
+      ) {
+        pairFillable++;
+      }
+    }
+    return {
+      sizeShares,
+      snapshots: withLevels.length,
+      pairFillable,
+      fillRate: withLevels.length > 0 ? pairFillable / withLevels.length : 0,
+    };
+  });
 }
