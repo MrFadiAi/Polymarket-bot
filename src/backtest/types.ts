@@ -14,6 +14,8 @@
  * ```
  */
 
+import type { PriceLevel } from '../utils/price-utils.js';
+
 export interface BacktestSnapshot {
   ts: number;
   yesAsk: number;
@@ -24,6 +26,18 @@ export interface BacktestSnapshot {
   noAskSize?: number;
   yesBidSize?: number;
   noBidSize?: number;
+  /**
+   * Multi-level depth (best-first, capped at export time).
+   * Present when snapshots come from Pendulum `book` rows; the replay
+   * engine walks these ladders for VWAP fills instead of assuming all
+   * size is available at the touch.
+   */
+  levels?: {
+    yesAsks: PriceLevel[];
+    yesBids: PriceLevel[];
+    noAsks: PriceLevel[];
+    noBids: PriceLevel[];
+  };
 }
 
 export type BacktestSignalType = 'long' | 'short' | 'flat';

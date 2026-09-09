@@ -7,6 +7,7 @@
 
 import { readFileSync } from 'node:fs';
 import { longArbStrategy, parseSnapshotsJsonl, runBacktest } from './replay.js';
+import { scanArbAvailability } from './availability.js';
 
 const file = process.argv[2];
 if (!file) {
@@ -15,9 +16,11 @@ if (!file) {
 }
 
 const snapshots = parseSnapshotsJsonl(readFileSync(file, 'utf8'));
+const profitThreshold = 0.005;
+const availability = scanArbAvailability(snapshots, { profitThreshold });
 const { trades, metrics } = runBacktest(
   snapshots,
-  (snap, i) => longArbStrategy(snap, i, { profitThreshold: 0.005 }),
+  (snap, i) => longArbStrategy(snap, i, { profitThreshold }),
   {
     startingEquity: 250,
     feeRateBps: Number(process.env.BACKTEST_FEE_BPS ?? 0),
@@ -38,6 +41,15 @@ console.log(
       totalPnl: metrics.totalPnl,
       profitFactor: metrics.profitFactor,
       maxDrawdown: metrics.maxDrawdown,
+      availability: {
+        edgeSnapshots: availability.edgeSnapshots,
+        edgeFraction: availability.edgeFraction,
+        windows: availability.windows.length,
+        medianWindowMs: availability.medianWindowMs,
+        maxWindowMs: availability.maxWindowMs,
+        avgEdge: availability.avgEdge,
+        maxEdge: availability.maxEdge,
+      },
       sample: trades.slice(0, 5),
     },
     null,

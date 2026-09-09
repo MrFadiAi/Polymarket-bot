@@ -10,6 +10,7 @@
  */
 
 import { getEffectivePrices, estimateTakerFee } from '../utils/price-utils.js';
+import type { PriceLevel } from '../utils/price-utils.js';
 import { summarizeTrades } from './metrics.js';
 import type {
   BacktestConfig,
@@ -46,6 +47,31 @@ export function longArbStrategy(
   return { type: 'flat', size: 0 };
 }
 
+/**
+ * Walk a best-first ladder, filling up to `size`.
+ * Returns filled size and total notional (VWAP = notional / filled).
+ */
+export function fillLadder(
+  levels: PriceLevel[],
+  size: number
+): { filled: number; notional: number } {
+  let filled = 0;
+  let notional = 0;
+  for (const l of levels) {
+    if (filled >= size) break;
+    if (!Number.isFinite(l.price) || !Number.isFinite(l.size) || l.size <= 0) continue;
+    const take = Math.min(l.size, size - filled);
+    filled += take;
+    notional += take * l.price;
+  }
+  return { filled, notional };
+}
+
+/** Total executable size resting on a ladder. */
+export function ladderSize(levels: PriceLevel[]): number {
+  return levels.reduce((s, l) => s + (Number.isFinite(l.size) && l.size > 0 ? l.size : 0), 0);
+}
+
 export function runBacktest(
   snapshots: BacktestSnapshot[],
   strategy: BacktestStrategy,
@@ -66,6 +92,39 @@ export function runBacktest(
     const e = getEffectivePrices(snap.yesAsk, snap.yesBid, snap.noAsk, snap.noBid);
 
     if (signal.type === 'long') {
+      // Depth-aware fill: when multi-level ladders are present (Pendulum
+      // `book` rows), walk both ask ladders at VWAP. This is conservative:
+      // it uses the direct ladders, ignoring the mirror (1 - bid) route the
+      // edge detection considers. Partial fills allowed — size clamps to
+      // what rests on BOTH ladders.
+      const askLevels = snap.levels ? [snap.levels.yesAsks, snap.levels.noAsks] : undefined;
+      if (askLevels && (ladderSize(askLevels[0]) > 0 || ladderSize(askLevels[1]) > 0)) {
+        const size = Math.max(
+          0,
+          Math.min(signal.size, ladderSize(askLevels[0]), ladderSize(askLevels[1]), maxTradeSize)
+        );
+        if (size <= 0) return;
+        // size is clamped to valid ladder depth, so both legs fill fully.
+        const legYes = fillLadder(askLevels[0], size);
+        const legNo = fillLadder(askLevels[1], size);
+        const entryCost = legYes.notional + legNo.notional;
+        const feeUsd =
+          estimateTakerFee(legYes.notional, feeRateBps) +
+          estimateTakerFee(legNo.notional, feeRateBps);
+        const pnl = size - entryCost - feeUsd - gasCostUsd;
+        if (pnl < minNetProfitUsd) return;
+        trades.push({
+          ts: snap.ts,
+          type: 'long',
+          size,
+          entryCost,
+          exitValue: size,
+          feeUsd,
+          gasUsd: gasCostUsd,
+          pnl,
+        });
+        return;
+      }
       const depth = Math.min(snap.yesAskSize ?? maxTradeSize, snap.noAskSize ?? maxTradeSize);
       const size = Math.max(0, Math.min(signal.size, depth, maxTradeSize));
       if (size <= 0) return;
