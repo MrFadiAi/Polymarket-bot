@@ -349,4 +349,4 @@ const snapshots = pendulumBookRowsToSnapshots(rows, yesAsset, noAsset, { maxLeve
 | Arb depth-aware fill simulation | Medium | Medium | Pendulum Flow | Arbitrage | ✅ Done (VWAP ladder walks) |
 | Direct Trading stop-loss / TP backtest | Medium | Medium | Pendulum Flow | Direct | ✅ Done (config-mirror exits, validated synthetic) |
 | Cross-market arb discovery | Low | High | Both | Direct | ✅ Done (VWAP divergence scan, side-normalized; 0 arb in 77 real pairs) |
-| Competition analysis (who else arbs?) | Low | Low | poly_data | Arbitrage |
+| Competition analysis (who else arbs?) | Low | Low | poly_data | Arbitrage | ✅ Done (taker HHI + repeat takers + both-sides; 97k real fills: top taker ~48%/mkt, 10 systematic repeat takers) |

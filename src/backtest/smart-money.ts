@@ -48,6 +48,8 @@ export interface PolyTrade {
   ts: number;
   market_id: string;
   maker: string;
+  /** Optional: only parsed when the CSV carries a `taker` column. */
+  taker?: string;
   maker_direction: 'BUY' | 'SELL';
   nonusdc_side: string;
   price: number;
@@ -198,6 +200,7 @@ export function parsePolyTradesCsv(text: string): PolyTrade[] {
   const iSide = idx('nonusdc_side');
   const iPrice = idx('price');
   const iQty = idx('token_amount');
+  const iTaker = idx('taker');
   if ([iTs, iMkt, iMaker, iDir, iSide, iPrice, iQty].some((i) => i < 0)) {
     throw new Error('trades.csv missing required columns');
   }
@@ -216,6 +219,7 @@ export function parsePolyTradesCsv(text: string): PolyTrade[] {
       ts,
       market_id: c[iMkt],
       maker: c[iMaker].toLowerCase(),
+      ...(iTaker >= 0 && c[iTaker] ? { taker: c[iTaker].toLowerCase() } : {}),
       maker_direction: dir,
       nonusdc_side: c[iSide],
       price,
