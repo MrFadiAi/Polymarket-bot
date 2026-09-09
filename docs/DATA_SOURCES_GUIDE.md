@@ -183,7 +183,7 @@ implemented stop-loss is DipArb's 20%. No systematic backtest.
 | Snipe execution quality | Pendulum Flow | Model what happens when you buy slightly above market: how often does it fill vs get picked off? |
 | FOK fill rates | Pendulum Flow | For a given order size, what % of the time does the book have enough depth to fill entirely? (FOK is real and widespread — arb, DipArb and copy-trading all use it.) |
 | Stop-loss / take-profit testing | Pendulum Flow | ✅ Done: `src/backtest/direct.ts` replays the `bot-config.ts` `directTrading` exits (15% stop, 25% TP, 10% trailing, 7-day max hold) on snapshot books — sequential $5 FOK entries, first-trigger exits, exit-reason counts. Entry timing is naive by design (live has no entry signal either). |
-| Cross-market arbitrage | Both | Find price discrepancies across related markets (e.g., same city temperature vs weather derivative) using poly_data trades + Pendulum depth. |
+| Cross-market arbitrage | Both | ✅ Done: `src/backtest/xmarket.ts` — bucket fills to per-minute VWAP per market, align shared buckets across candidate duplicate pairs, flag \|a−b\| ≥ threshold (CLI `scripts/backtest/xmarket.ts`). Fills normalized to token1-equivalent (token2 → 1−price; a raw run without this flagged 50c phantom diffs). Candidates from grouping `markets.csv` on (question, end, start): 42k raw groups are mostly sports scaffolds, 25k small groups, 120 with ≥2 markets active in-window — but same-question groups mix *different same-day matches* (slugs prove it: `cs2-5s-mglz-…` vs `cs2-mgc-faze-…`), so pairs were restricted to same slug-stem (60 groups / 77 pairs). Real-data result 2026-09-09: **0 divergences ≥2c, max 1.8c** — genuine duplicates track; no cross-market arb in window. |
 
 ---
 
@@ -348,5 +348,5 @@ const snapshots = pendulumBookRowsToSnapshots(rows, yesAsset, noAsset, { maxLeve
 | DipArb panic detection replay | High | Medium | Pendulum Flow | DipArb | ✅ Done (live-mirror Leg1/Leg2/timeout/SL, validated synthetic; sparse-book caveat) |
 | Arb depth-aware fill simulation | Medium | Medium | Pendulum Flow | Arbitrage | ✅ Done (VWAP ladder walks) |
 | Direct Trading stop-loss / TP backtest | Medium | Medium | Pendulum Flow | Direct | ✅ Done (config-mirror exits, validated synthetic) |
-| Cross-market arb discovery | Low | High | Both | Direct |
+| Cross-market arb discovery | Low | High | Both | Direct | ✅ Done (VWAP divergence scan, side-normalized; 0 arb in 77 real pairs) |
 | Competition analysis (who else arbs?) | Low | Low | poly_data | Arbitrage |
