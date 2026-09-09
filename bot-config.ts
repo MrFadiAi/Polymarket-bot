@@ -35,12 +35,15 @@ import {
   type BinanceKLine,
 } from './src/index.js';
 import {
-  calculatePositionSize as calcSizedPosition,
   shouldPauseForLossStreak,
   evaluateWalletQuality,
   computeWalletQualityFromPositions,
   checkExposure,
+  toWalletQualityGate,
+  type PreExecutionGuard,
+  type RiskIntent,
 } from './src/utils/risk.js';
+import { fetchClosedPnls } from './src/utils/closed-positions.js';
 
 // ============================================================================
 // CONFIGURATION
@@ -389,30 +392,9 @@ function recordTrade(profit: number, strategy: string) {
   else if (strategy === 'direct') state.directTrades++;
 }
 
-// 🔴 FIXED (P13): dynamic sizing with USD floor — returns 0 = skip the trade
-// (prevents dust orders when streak decay shrinks size below minOrderUsd).
-function calculatePositionSize(baseSize: number): number {
-  const sized = calcSizedPosition(
-    baseSize,
-    {
-      consecutiveLosses: state.consecutiveLosses,
-      consecutiveWins: state.consecutiveWins,
-      capitalUsd: CONFIG.capital.totalUsd,
-    },
-    {
-      enableDynamicSizing: CONFIG.risk.enableDynamicSizing,
-      minPositionPct: CONFIG.risk.minPositionPct,
-      maxPositionPct: CONFIG.risk.maxPositionPct,
-      lossSizingReduction: CONFIG.risk.lossSizingReduction,
-      winSizingIncrease: CONFIG.risk.winSizingIncrease,
-      minOrderUsd: CONFIG.capital.minOrderUsd,
-    }
-  );
-  if (sized === 0 && baseSize > 0) {
-    log('WARN', `Position sizing skipped: sized notional below $${CONFIG.capital.minOrderUsd} floor after ${state.consecutiveLosses} consecutive losses`);
-  }
-  return sized;
-}
+// 🔴 AUDIT #5: the dead local adapter was removed — live sizing uses the
+// shared calculatePositionSize from src/utils/risk.ts directly (wired into
+// the dashboard Direct buy; this entry point places no orders itself).
 
 // 🔴 P7: gate for opening a new position (per-trade + per-market + total caps)
 function canOpenPosition(marketKey: string, sizeUsd: number): boolean {
@@ -441,6 +423,16 @@ function trackExposure(marketKey: string, sizeUsd: number): void {
   state.perMarketExposureUsd[marketKey] = (state.perMarketExposureUsd[marketKey] ?? 0) + sizeUsd;
 }
 
+// 🔴 AUDIT #4: single shared pre-execution guard for all strategies.
+// canOpenPosition already includes canTrade(), so one call enforces
+// Layers 1-6 against chain-seeded exposure (refreshExposure, 60s).
+const riskGuard: PreExecutionGuard = (intent: RiskIntent) => {
+  if (!canOpenPosition(intent.marketKey, intent.usdcAmount)) {
+    return `${intent.strategy} blocked by risk limits`;
+  }
+  return null;
+};
+
 function releaseExposure(marketKey: string, sizeUsd: number): void {
   state.totalExposureUsd = Math.max(0, state.totalExposureUsd - sizeUsd);
   state.perMarketExposureUsd[marketKey] = Math.max(0, (state.perMarketExposureUsd[marketKey] ?? 0) - sizeUsd);
@@ -455,14 +447,7 @@ function judgeWallet(
 ): boolean {
   const q = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
   const { pass, failures } = evaluateWalletQuality(
-    {
-      winRate: q.winRate,
-      pnl,
-      tradeCount,
-      profitFactor: q.profitFactor,
-      consistencyScore: q.consistencyScore,
-      singleTradeExposure: q.singleTradeExposure,
-    },
+    toWalletQualityGate(q, pnl, tradeCount),
     {
       minWinRate: CONFIG.smartMoney.minWinRate,
       minPnl: CONFIG.smartMoney.minPnl,
@@ -534,7 +519,8 @@ async function setupSmartMoney(sdk: PolymarketSDK) {
     for (const wallet of CONFIG.smartMoney.customWallets) {
       try {
         const entry = entryByAddress.get(wallet.toLowerCase());
-        const positions = await sdk.dataApi.getPositions(wallet);
+        // AUDIT #1: score on closed (realized) positions, not open ones.
+        const positions = await fetchClosedPnls(sdk.dataApi, wallet);
         const fallback = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
         const pnl = entry?.pnl ?? fallback.totalPnl;
         const tradeCount = entry?.tradeCount ?? fallback.tradeCount;
@@ -549,7 +535,8 @@ async function setupSmartMoney(sdk: PolymarketSDK) {
   // 2. Wallets from leaderboard (with STRICT filtering)
   for (const entry of leaderboard.entries) {
     try {
-      const positions = await sdk.dataApi.getPositions(entry.address);
+      // AUDIT #1: score on closed (realized) positions, not open ones.
+      const positions = await fetchClosedPnls(sdk.dataApi, entry.address);
       if (judgeWallet(entry.address, entry.pnl, entry.tradeCount || 0, positions) && !qualified.includes(entry.address)) {
         qualified.push(entry.address);
       }
@@ -575,11 +562,17 @@ async function setupSmartMoney(sdk: PolymarketSDK) {
       minTradeSize: CONFIG.smartMoney.minTradeSize,
       delay: CONFIG.smartMoney.delay,
       dryRun: false,
+      preExecutionGuard: riskGuard, // Audit #4: risk limits gate copy BUYs
       onTrade: (trade, result) => {
         if (result.success) {
           log('TRADE', `Copied ${trade.side} from ${trade.traderAddress.slice(0, 8)}...`);
-          recordTrade(0, 'smartMoney');
         }
+      },
+      // Audit #2: record realized PnL when copies close, not $0 per copy.
+      // recordTrade now fires per close, so win/loss streaks are meaningful.
+      onCopyPnl: (info) => {
+        log('TRADE', `Copy closed ${info.closedSize.toFixed(2)} @ PnL $${info.realizedUsd.toFixed(2)}`);
+        recordTrade(info.realizedUsd, 'smartMoney');
       },
       onError: (err) => log('ERROR', `Copy error: ${err.message}`),
     });
@@ -605,6 +598,7 @@ async function setupArbitrage(sdk: PolymarketSDK) {
     autoExecute: !CONFIG.dryRun && CONFIG.arbitrage.autoExecute,
     enableRebalancer: !CONFIG.dryRun && CONFIG.arbitrage.enableRebalancer,
     enableLogging: true,
+    preExecutionGuard: riskGuard, // Audit #4: risk limits gate arb too
   });
 
   arbService.on('opportunity', (opp) => {
@@ -642,6 +636,7 @@ async function setupDipArb(sdk: PolymarketSDK) {
     sumTarget: CONFIG.dipArb.sumTarget,
     autoExecute: !CONFIG.dryRun,
     debug: true,
+    preExecutionGuard: riskGuard, // Audit #4: risk limits gate DipArb Leg1
   });
 
   sdk.dipArb.on('signal', (s) => log('SIGNAL', `DipArb: ${s.type} ${s.side}`));

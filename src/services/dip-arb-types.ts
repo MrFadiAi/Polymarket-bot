@@ -19,6 +19,8 @@
 
 // ============= Configuration =============
 
+import type { PreExecutionGuard } from '../utils/risk.js';
+
 /**
  * DipArbService 配置
  */
@@ -99,6 +101,13 @@ export interface DipArbServiceConfig {
   feeRateBps?: number;
 
   /**
+   * App-layer risk gate (audit #4): consulted before Leg1 opens exposure.
+   * Return null to allow, or a reason to block. Leg2 hedges and emergency
+   * exits bypass it — blocking an exit can only increase risk.
+   */
+  preExecutionGuard?: PreExecutionGuard;
+
+  /**
    * 启用暴涨检测
    * 当 token 价格暴涨时，买入对手 token（预期均值回归）
    * @default true
@@ -169,8 +178,9 @@ export interface DipArbServiceConfig {
 /**
  * 内部配置类型（不包含 logHandler，因为它是纯可选的回调函数）
  */
-export type DipArbConfigInternal = Required<Omit<DipArbServiceConfig, 'logHandler'>> & {
+export type DipArbConfigInternal = Required<Omit<DipArbServiceConfig, 'logHandler' | 'preExecutionGuard'>> & {
   logHandler?: (message: string) => void;
+  preExecutionGuard?: PreExecutionGuard;
 };
 
 /**

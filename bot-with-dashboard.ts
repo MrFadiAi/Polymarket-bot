@@ -22,6 +22,13 @@ import { startDashboard, dashboardEmitter } from './src/dashboard/index.js';
 import type { BotState, BotConfig, LogLevel, DipArbSignal, SmartMoneySignal } from './src/dashboard/types.js';
 import { addSession, createSessionFromState, type TradeRecord } from './src/dashboard/session-history.js';
 import { resolvePolygonRpcUrl } from './src/utils/rpc.js';
+import {
+  computeWalletQualityFromPositions,
+  evaluateWalletQuality,
+  toWalletQualityGate,
+  calculatePositionSize,
+} from './src/utils/risk.js';
+import { fetchClosedPnls } from './src/utils/closed-positions.js';
 
 // ============================================================================
 // CONFIGURATION (same as bot-config.ts)
@@ -374,10 +381,32 @@ async function initializeSmartMoney(sdk: PolymarketSDK) {
 
   const qualified: string[] = [];
 
+  // AUDIT #1: custom wallets face the SAME 6/6 gate as leaderboard (no bypass).
+  // Scored on closed (realized) positions; PnL/count fall back to the sample.
   if (CONFIG.smartMoney.customWallets?.length > 0) {
     for (const wallet of CONFIG.smartMoney.customWallets) {
-      qualified.push(wallet);
-      log('WALLET', `⭐ Custom wallet added: ${wallet.slice(0, 10)}...`);
+      try {
+        const positions = await fetchClosedPnls(sdk.dataApi, wallet);
+        const q = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
+        const { pass, failures } = evaluateWalletQuality(
+          toWalletQualityGate(q, q.totalPnl, q.tradeCount),
+          {
+            minWinRate: CONFIG.smartMoney.minWinRate,
+            minPnl: CONFIG.smartMoney.minPnl,
+            minTrades: CONFIG.smartMoney.minTrades,
+            minProfitFactor: CONFIG.smartMoney.minProfitFactor,
+            minConsistencyScore: CONFIG.smartMoney.minConsistencyScore,
+            maxSingleTradeExposure: CONFIG.smartMoney.maxSingleTradeExposure,
+          }
+        );
+        if (!pass) {
+          log('WALLET', `❌ Custom wallet rejected: ${wallet.slice(0, 10)}... (${failures.join(', ')})`);
+          continue;
+        }
+        qualified.push(wallet);
+        log('WALLET', `⭐ Custom wallet qualified: ${wallet.slice(0, 10)}...`);
+      } catch { /* skip unreachable wallets */ }
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
@@ -394,15 +423,31 @@ async function initializeSmartMoney(sdk: PolymarketSDK) {
       const profile = await sdk.wallets.getWalletProfile(entry.address);
       if (!profile) continue;
 
-      const winRate = (profile as any).winRate ?? 0;
       const pnl = entry.pnl ?? 0;
       const trades = profile.tradeCount ?? 0;
 
-      if (winRate >= CONFIG.smartMoney.minWinRate &&
-        pnl >= CONFIG.smartMoney.minPnl &&
-        trades >= CONFIG.smartMoney.minTrades) {
+      // AUDIT #1: full shared 6/6 gate on closed (realized) positions —
+      // the old 3-check (WR/PnL/trades) let whale-dominated and
+      // inconsistent wallets through.
+      const positions = await fetchClosedPnls(sdk.dataApi, entry.address);
+      const q = computeWalletQualityFromPositions(positions, CONFIG.smartMoney.checkLastNTrades);
+      const { pass, failures } = evaluateWalletQuality(
+        toWalletQualityGate(q, pnl, trades),
+        {
+          minWinRate: CONFIG.smartMoney.minWinRate,
+          minPnl: CONFIG.smartMoney.minPnl,
+          minTrades: CONFIG.smartMoney.minTrades,
+          minProfitFactor: CONFIG.smartMoney.minProfitFactor,
+          minConsistencyScore: CONFIG.smartMoney.minConsistencyScore,
+          maxSingleTradeExposure: CONFIG.smartMoney.maxSingleTradeExposure,
+        }
+      );
+
+      if (pass) {
         qualified.push(entry.address);
-        log('WALLET', `✅ Qualified: ${entry.address.slice(0, 10)}... (WR:${(winRate * 100).toFixed(0)}% PnL:$${pnl.toFixed(0)} T:${trades})`);
+        log('WALLET', `✅ Qualified: ${entry.address.slice(0, 10)}... (WR:${(q.winRate * 100).toFixed(0)}% PF:${q.profitFactor.toFixed(2)}x PnL:$${pnl.toFixed(0)} T:${trades})`);
+      } else if (CONFIG.dryRun) {
+        log('WALLET', `❌ Rejected: ${entry.address.slice(0, 10)}... (${failures.join(', ')})`);
       }
 
       await new Promise(r => setTimeout(r, 300));
@@ -899,8 +944,32 @@ async function setupDirectTrading(sdk: PolymarketSDK) {
                 state.directTrades = (state.directTrades ?? 0) + 1;
                 updateDashboard();
               } else {
-                // Live Mode Execution
-                const amountUsdc = 5; // Fixed small size for testing ($5)
+                // Live Mode Execution — AUDIT #5: streak-adjusted size from
+                // the shared sizer. At rest (no streak) this is
+                // maxPerTradePct × capital = 0.02 × $250 = $5, identical to
+                // the old fixed size; loss streaks shrink it (dust floor
+                // skips), win streaks grow it within caps.
+                const sizeFrac = calculatePositionSize(
+                  CONFIG.capital.maxPerTradePct,
+                  {
+                    consecutiveLosses: state.consecutiveLosses,
+                    consecutiveWins: state.consecutiveWins,
+                    capitalUsd: CONFIG.capital.totalUsd,
+                  },
+                  {
+                    enableDynamicSizing: CONFIG.risk.enableDynamicSizing,
+                    minPositionPct: CONFIG.risk.minPositionPct,
+                    maxPositionPct: CONFIG.risk.maxPositionPct,
+                    lossSizingReduction: CONFIG.risk.lossSizingReduction,
+                    winSizingIncrease: CONFIG.risk.winSizingIncrease,
+                    minOrderUsd: CONFIG.capital.minOrderUsd,
+                  }
+                );
+                const amountUsdc = Math.round(sizeFrac * CONFIG.capital.totalUsd * 100) / 100;
+                if (amountUsdc <= 0) {
+                  log('WARN', `Direct trade skipped: sized notional below $${CONFIG.capital.minOrderUsd} floor after ${state.consecutiveLosses} consecutive losses`);
+                  continue;
+                }
 
                 log('SIGNAL', `Executing Trend Trade: ${trend.toUpperCase()} on ${market.question?.slice(0, 30)}...`);
 

@@ -31,6 +31,8 @@ import type { RealtimeServiceV2, ActivityTrade } from './realtime-service-v2.js'
 import type { TradingService, OrderResult } from './trading-service.js';
 import type { MarketService } from './market-service.js';
 import { estimateTakerFee } from '../utils/price-utils.js';
+import { CopyPnlTracker } from './copy-pnl-tracker.js';
+import type { PreExecutionGuard } from '../utils/risk.js';
 import type { Position, ClosedPosition, ClosedPositionsParams, DataApiClient } from '../clients/data-api.js';
 
 // ============================================================================
@@ -195,8 +197,29 @@ export interface AutoCopyTradingOptions {
   /** Dry run mode */
   dryRun?: boolean;
 
+  /**
+   * App-layer risk gate (audit #4): consulted before an exposure-opening
+   * (BUY) copy is placed. SELL copies bypass it — they close exposure, and
+   * blocking an exit can only increase risk. Return null to allow, or a
+   * reason to block.
+   */
+  preExecutionGuard?: PreExecutionGuard;
+
   /** Callbacks */
   onTrade?: (trade: SmartMoneyTrade, result: OrderResult) => void;
+  /**
+   * Fired when an executed copy closes (part of) a tracked lot, with the
+   * realized PnL for that close (USDC, net of estimated fees). This is the
+   * audit-#2 fix: copy performance is measured from closes, not $0 per copy.
+   * Fill prices are estimates (limit used); see CopyPnlTracker docs.
+   */
+  onCopyPnl?: (info: {
+    tokenId: string;
+    side: 'BUY' | 'SELL';
+    closedSize: number;
+    realizedUsd: number;
+    totalRealizedUsd: number;
+  }) => void;
   onError?: (error: Error) => void;
 }
 
@@ -212,6 +235,8 @@ export interface AutoCopyTradingStats {
   totalUsdcSpent: number;
   /** Estimated taker fees paid across executed copies (USDC) */
   totalFeesEstimateUsd: number;
+  /** Realized copy-trade PnL from closed lots (USDC, net of fee estimates) */
+  realizedPnlUsd: number;
   /** Copies skipped because the whale print was stale */
   staleSkipped: number;
   /** Copies skipped because of spread/premium/liquidity guards */
@@ -1050,6 +1075,7 @@ export class SmartMoneyService {
       tradesFailed: 0,
       totalUsdcSpent: 0,
       totalFeesEstimateUsd: 0,
+      realizedPnlUsd: 0,
       staleSkipped: 0,
       quoteGuardSkipped: 0,
       perWallet: {},
@@ -1070,6 +1096,10 @@ export class SmartMoneyService {
     const maxConsecutiveFailures = options.maxConsecutiveFailures ?? 3;
     const walletCooldownMs = options.walletCooldownMs ?? 3600000;
     const feeRateBps = options.feeRateBps ?? 0;
+
+    // Audit #2: FIFO lots per token so copy closes report realized PnL
+    // instead of $0. Fill price estimated at the limit used (slippagePrice).
+    const pnlTracker = new CopyPnlTracker();
 
     if (!this.marketService && !this.liveQuoteWarningLogged) {
       this.liveQuoteWarningLogged = true;
@@ -1204,6 +1234,21 @@ export class SmartMoneyService {
           const usdcAmount = copyValue; // Already calculated above
           const feeEstimate = estimateTakerFee(usdcAmount, feeRateBps);
 
+          // Audit #4: risk gate on exposure-opening (BUY) copies only.
+          if (trade.side === 'BUY') {
+            const blockReason = options.preExecutionGuard?.({
+              strategy: 'smartMoney',
+              side: 'BUY',
+              usdcAmount,
+              marketKey: trade.conditionId ?? trade.marketSlug ?? 'unknown',
+            });
+            if (blockReason) {
+              stats.tradesSkipped++;
+              this.bumpWalletCounter(stats, walletAddr, 'skipped');
+              return;
+            }
+          }
+
           // Execute
           let result: OrderResult;
 
@@ -1232,6 +1277,18 @@ export class SmartMoneyService {
             health.copiesExecuted++;
             health.consecutiveFailures = 0;
             this.bumpWalletCounter(stats, walletAddr, 'executed');
+            // Audit #2: match this fill against tracked lots; report closes.
+            const close = pnlTracker.recordFill(tokenId, trade.side, copySize, slippagePrice, feeEstimate);
+            stats.realizedPnlUsd = pnlTracker.totalRealizedUsd;
+            if (close.closedSize > 0) {
+              options.onCopyPnl?.({
+                tokenId,
+                side: trade.side,
+                closedSize: close.closedSize,
+                realizedUsd: close.realizedUsd,
+                totalRealizedUsd: pnlTracker.totalRealizedUsd,
+              });
+            }
           } else {
             stats.tradesFailed++;
             health.consecutiveFailures++;

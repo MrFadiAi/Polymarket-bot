@@ -145,6 +145,27 @@ export interface PnlPosition {
   cashPnl?: number | null;
 }
 
+/**
+ * Map computed quality + leaderboard PnL/trade count onto the shared gate
+ * input. Both app entry points (bot-config, bot-with-dashboard) MUST use
+ * this so custom + leaderboard wallets face the identical 6/6 checks
+ * (AUDIT #1: dashboard previously applied only 3/6).
+ */
+export function toWalletQualityGate(
+  q: ComputedWalletQuality,
+  pnl: number,
+  tradeCount: number
+): WalletQualityGate {
+  return {
+    winRate: q.winRate,
+    pnl,
+    tradeCount,
+    profitFactor: q.profitFactor,
+    consistencyScore: q.consistencyScore,
+    singleTradeExposure: q.singleTradeExposure,
+  };
+}
+
 export interface ComputedWalletQuality {
   tradeCount: number;
   totalPnl: number;
@@ -199,3 +220,24 @@ export function checkExposure(
   const usagePct = exposureUsd / capitalUsd;
   return { allowed: usagePct <= maxTotalExposurePct, usagePct };
 }
+
+/**
+ * Pre-execution risk intent passed from a strategy to the app-layer guard
+ * (audit #4 fix). Services stay decoupled from bot state: they describe what
+ * they are about to do, and the guard allows or blocks with a reason.
+ */
+export interface RiskIntent {
+  strategy: 'arbitrage' | 'dipArb' | 'smartMoney';
+  side: 'BUY' | 'SELL';
+  /** Notional in USDC about to be committed. */
+  usdcAmount: number;
+  /** Market key for per-market caps (conditionId; 'unknown' when unavailable). */
+  marketKey: string;
+}
+
+/**
+ * Return null to allow, or a reason string to block the execution.
+ * Rule: only exposure-OPENING fills are gated; hedges, closes and emergency
+ * exits must never be blocked (blocking an exit can only increase risk).
+ */
+export type PreExecutionGuard = (intent: RiskIntent) => string | null;

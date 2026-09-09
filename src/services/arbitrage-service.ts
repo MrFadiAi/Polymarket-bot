@@ -39,6 +39,7 @@ import {
 } from '../utils/price-utils.js';
 import { resolvePolygonRpcUrl } from '../utils/rpc.js';
 import type { BookUpdate } from '../core/types.js';
+import type { PreExecutionGuard } from '../utils/risk.js';
 
 // ===== Types =====
 
@@ -106,6 +107,12 @@ export interface ArbitrageServiceConfig {
   maxDepthLevels?: number;
   /** Execute YES/NO legs sequentially instead of Promise.all (default: true) */
   sequentialExecution?: boolean;
+  /**
+   * App-layer risk gate (audit #4): consulted before any order is placed.
+   * Return null to allow, or a reason to block. Only exposure-opening fills
+   * are gated — closes/exits bypass it inside the callees.
+   */
+  preExecutionGuard?: PreExecutionGuard;
 }
 
 export interface RebalanceAction {
@@ -280,10 +287,11 @@ export class ArbitrageService extends EventEmitter {
   private rateLimiter: RateLimiter;
 
   private market: ArbitrageMarketConfig | null = null;
-  private config: Omit<Required<ArbitrageServiceConfig>, 'privateKey' | 'rpcUrl' | 'rebalanceInterval'> & {
+  private config: Omit<Required<ArbitrageServiceConfig>, 'privateKey' | 'rpcUrl' | 'rebalanceInterval' | 'preExecutionGuard'> & {
     privateKey?: string;
     rpcUrl?: string;
     rebalanceIntervalMs: number;
+    preExecutionGuard?: PreExecutionGuard;
   };
 
   private orderbook: OrderbookState = {
@@ -349,6 +357,8 @@ export class ArbitrageService extends EventEmitter {
       maxSlippagePct: config.maxSlippagePct ?? 0.01,
       maxDepthLevels: config.maxDepthLevels ?? 5,
       sequentialExecution: config.sequentialExecution ?? true,
+      // Audit #4: risk gate passes straight through (no default — unset = unguarded, caller's choice)
+      preExecutionGuard: config.preExecutionGuard,
     };
 
     this.rateLimiter = new RateLimiter();
@@ -630,6 +640,25 @@ export class ArbitrageService extends EventEmitter {
    * Manually execute an arbitrage opportunity
    */
   async execute(opportunity: ArbitrageOpportunity): Promise<ArbitrageExecutionResult> {
+    // Audit #4: risk gate first — cheapest check, no state touched.
+    const blockReason = this.config.preExecutionGuard?.({
+      strategy: 'arbitrage',
+      side: opportunity.type === 'long' ? 'BUY' : 'SELL',
+      usdcAmount: opportunity.recommendedSize,
+      marketKey: this.market?.conditionId ?? 'unknown',
+    });
+    if (blockReason) {
+      return {
+        success: false,
+        type: opportunity.type,
+        size: 0,
+        profit: 0,
+        txHashes: [],
+        error: `Blocked by risk guard: ${blockReason}`,
+        executionTimeMs: 0,
+      };
+    }
+
     if (!this.ctf || !this.tradingService || !this.market) {
       return {
         success: false,

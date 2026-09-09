@@ -40,7 +40,7 @@ import { TradingService, type MarketOrderParams } from './trading-service.js';
 import { MarketService } from './market-service.js';
 import { CTFClient } from '../clients/ctf-client.js';
 import { resolvePolygonRpcUrl } from '../utils/rpc.js';
-import { estimateTakerFee } from '../utils/price-utils.js';
+import { estimateTakerFee, calculateNetLongArbProfit } from '../utils/price-utils.js';
 import type { Side } from '../core/types.js';
 import {
   type DipArbServiceConfig,
@@ -595,6 +595,25 @@ export class DipArbService extends EventEmitter {
       };
     }
 
+    // Audit #4: risk gate on the exposure-opening leg only. Leg2 hedges and
+    // emergency exits bypass it — blocking an exit can only increase risk.
+    const blockReason = this.config.preExecutionGuard?.({
+      strategy: 'dipArb',
+      side: 'BUY',
+      usdcAmount: signal.shares * signal.targetPrice,
+      marketKey: this.market.conditionId,
+    });
+    if (blockReason) {
+      this.isExecuting = false;
+      return {
+        success: false,
+        leg: 'leg1',
+        roundId: signal.roundId,
+        error: `Blocked by risk guard: ${blockReason}`,
+        executionTimeMs: Date.now() - startTime,
+      };
+    }
+
     try {
       this.isExecuting = true;  // Also set here for manual mode (when not called from handleSignal)
 
@@ -853,11 +872,20 @@ export class DipArbService extends EventEmitter {
         };
         this.currentRound.phase = 'completed';
         this.currentRound.totalCost = actualTotalCost;
-        this.currentRound.profit = 1 - actualTotalCost;
+        // AUDIT #3: book NET profit (taker fee on both legs' notional comes
+        // out of the $1 payout — same as the fee-aware entry gates above and
+        // arb-service). No gas term: this path has no gas config.
+        const booked = calculateNetLongArbProfit(
+          actualTotalCost,
+          totalSharesFilled,
+          this.config.feeRateBps,
+          0
+        );
+        this.currentRound.profit = booked.netPerUnit;
 
         this.stats.leg2Filled++;
         this.stats.roundsSuccessful++;
-        this.stats.totalProfit += this.currentRound.profit * totalSharesFilled;
+        this.stats.totalProfit += booked.net;
         this.stats.totalSpent += actualTotalCost * totalSharesFilled;
 
         this.lastExecutionTime = Date.now();
@@ -1298,7 +1326,11 @@ export class DipArbService extends EventEmitter {
 
       if (result.success) {
         const soldPrice = currentPrice;  // Approximate
-        const loss = (leg1.price - soldPrice) * leg1.shares;
+        // AUDIT #3: exit economics include taker fees on BOTH notionals
+        // (entry buy fee was never booked either).
+        const loss = (leg1.price - soldPrice) * leg1.shares
+          + estimateTakerFee(leg1.price * leg1.shares, this.config.feeRateBps)
+          + estimateTakerFee(soldPrice * leg1.shares, this.config.feeRateBps);
 
         this.log(`✅ Leg1 exit successful: sold ${leg1.shares}x ${leg1.side} @ ~${soldPrice.toFixed(4)} | Loss: $${loss.toFixed(2)}`);
 
