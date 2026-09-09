@@ -122,7 +122,7 @@ pairs merge at $1. No backtest exists.
 |---------|--------|-----|
 | Historical panic detection | Pendulum Flow | ✅ Done: `runDipArbBacktest` counts dip opportunities per hour (`scripts/backtest/dip-arb.ts`). (Sparse per-market snapshots: detection is coarser than live 3s polling; the dense `best_bid_ask` stream can refine timing — see §4.5.) |
 | DipArb fill simulation | Pendulum Flow | ✅ Done: Leg1 FOK-buy at the ask ladder (VWAP) + Leg2 hedge gated by `sumTarget`, with timeout/stop-loss exits (`src/backtest/dip-arb.ts`). |
-| Crypto market price history | poly_data | Open: correlating panic sells with actual crypto moves needs an oracle price feed joined to fills — no consumer in the live bot today. (Mispricing-pattern replay needs the same feed — not covered.) |
+| Crypto market price history | poly_data | Deferred (won't-do): correlating panic sells with actual crypto moves needs an oracle price feed, and nothing in the live bot consumes it. Revisit if an entry/exit signal ever needs it. |
 | Optimal dip threshold | Pendulum Flow | ✅ Done: CLI `--dip` sweeps thresholds (backtest covers 0.1 vs 0.2); pick the threshold maximizing risk-adjusted returns. |
 
 **Implementation**: Export the market's `book` rows (per §2.1, filter by
