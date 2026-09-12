@@ -21,6 +21,11 @@ export interface BotState {
   permanentlyHalted: boolean;
   lastDailyReset: number;
 
+  // v3.2 risk: chain-seeded exposure + PnL reconciliation
+  totalExposureUsd: number;
+  perMarketExposureUsd: Record<string, number>;
+  pnlBaselineUsdcE: number | null;
+
   // Strategy stats
   smartMoneyTrades: number;
   arbTrades: number;
@@ -131,6 +136,11 @@ export interface BotConfig {
     dailyMaxLossPct: number;
     maxConsecutiveLosses: number;
     pauseOnBreachMinutes: number;
+    monthlyMaxLossPct?: number;
+    maxDrawdownFromPeak?: number;
+    totalMaxLossPct?: number;
+    maxPnlDriftUsd?: number;
+    maxPnlDriftPct?: number;
   };
   smartMoney: {
     enabled: boolean;
