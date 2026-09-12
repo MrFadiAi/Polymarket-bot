@@ -3,6 +3,8 @@ import type { BotConfig } from '../types';
 interface StrategyControlsProps {
     config: BotConfig | null;
     onToggle: (strategy: string, enabled: boolean) => void;
+    onEmergencyStop: () => void;
+    onPanicSell: () => void;
 }
 
 interface ToggleProps {
@@ -36,7 +38,7 @@ function Toggle({ label, enabled, icon, color, onChange }: ToggleProps) {
     );
 }
 
-export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
+export function StrategyControls({ config, onToggle, onEmergencyStop, onPanicSell }: StrategyControlsProps) {
     if (!config) return null;
 
     const strategies = [
@@ -89,6 +91,22 @@ export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
                         onChange={(enabled) => onToggle(s.key, enabled)}
                     />
                 ))}
+                {/* v3.2 emergency controls — static Tailwind classes only
+                    (dynamic bg-${color}-500 interpolation is JIT-purged) */}
+                <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-white/5">
+                    <button
+                        onClick={onEmergencyStop}
+                        className="text-xs py-2 rounded-lg bg-red-600/10 border border-red-600/40 text-red-300 hover:bg-red-600/20 transition-colors"
+                    >
+                        🛑 Emergency Stop
+                    </button>
+                    <button
+                        onClick={onPanicSell}
+                        className="text-xs py-2 rounded-lg bg-orange-600/10 border border-orange-600/40 text-orange-300 hover:bg-orange-600/20 transition-colors"
+                    >
+                        🚨 Panic Sell
+                    </button>
+                </div>
                 <div className="text-xs text-gray-500 mt-2 text-center">
                     Changes take effect immediately. You may need sufficient USDC.e for trading strategies.
                 </div>

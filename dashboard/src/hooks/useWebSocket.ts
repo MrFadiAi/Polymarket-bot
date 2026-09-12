@@ -6,10 +6,14 @@ interface WebSocketMessage {
   payload: unknown;
 }
 
-// Connect to same host:port when served by bot, or port 3001 for dev
-const WS_URL = window.location.port === '5173'
+// Connect to same host:port when served by bot, or port 3001 for dev.
+// v3.2: forward ?token= from the page URL — browser WebSockets cannot set
+// auth headers, so the query param is the only token channel.
+const dashToken = new URLSearchParams(window.location.search).get('token');
+const wsBase = window.location.port === '5173'
   ? `ws://${window.location.hostname}:3001`
   : `ws://${window.location.host}`;
+const WS_URL = dashToken ? `${wsBase}/?token=${encodeURIComponent(dashToken)}` : wsBase;
 const MAX_LOGS = 200;
 
 export function useWebSocket() {

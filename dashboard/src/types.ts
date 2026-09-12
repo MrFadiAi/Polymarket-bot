@@ -32,6 +32,20 @@ export interface BotState {
   tradesExecuted: number;
   isPaused: boolean;
   pauseUntil: number;
+
+  // v3.1/v3.2 risk state (broadcast by the bot, backend-authoritative)
+  consecutiveWins?: number;
+  monthlyPnL?: number;
+  monthStartTime?: number;
+  peakCapital?: number;
+  currentCapital?: number;
+  currentDrawdown?: number;
+  permanentlyHalted?: boolean;
+  lastDailyReset?: number;
+  totalExposureUsd?: number;
+  perMarketExposureUsd?: Record<string, number>;
+  pnlBaselineUsdcE?: number | null;
+
   smartMoneyTrades: number;
   arbTrades: number;
   dipArbTrades: number;
@@ -80,6 +94,15 @@ export interface BotState {
 
   // Portfolio Sync (positions)
   positions?: any[];
+
+  // Paper Trading (Dry Run)
+  paper?: {
+    balance: number;
+    initialBalance: number;
+    pnl: number;
+    trades: number;
+    totalVolume: number;
+  };
 }
 
 export interface BotConfig {
@@ -100,6 +123,11 @@ export interface BotConfig {
     dailyMaxLossPct: number;
     maxConsecutiveLosses: number;
     pauseOnBreachMinutes: number;
+    monthlyMaxLossPct?: number;
+    maxDrawdownFromPeak?: number;
+    totalMaxLossPct?: number;
+    maxPnlDriftUsd?: number;
+    maxPnlDriftPct?: number;
   };
   smartMoney: {
     enabled: boolean;

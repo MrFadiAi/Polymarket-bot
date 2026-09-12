@@ -68,7 +68,7 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
               <h1 className="text-xl font-bold text-white tracking-tight">
                 Polymarket Bot
               </h1>
-              <div className="text-xs text-gray-500">v3.0 Professional</div>
+              <div className="text-xs text-gray-500">v3.2 Professional</div>
             </div>
           </div>
 
