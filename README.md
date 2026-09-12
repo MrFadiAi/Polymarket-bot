@@ -328,6 +328,16 @@ If something goes wrong:
 - **Beginner Guide**: Step-by-step tutorial in [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md).
 - **Quick Start**: Fast setup guide in [QUICKSTART.md](QUICKSTART.md).
 
+### 🎥 Community Tutorials
+
+**Polymarket Trading Bot — Video Walkthrough** by [@dravenip](https://x.com/dravenip) (Sep 2026) — quick video overview of the bot's strategies and dashboard.
+
+[![Tutorial by @dravenip](docs/images/tweet-dravenip.png)](https://x.com/dravenip/status/2098384813921018281)
+
+**الدليل الشامل لبوت التداول على Polymarket 🤖 — Complete Written Guide (Arabic)** by [@Mr_CryptoYT](https://x.com/Mr_CryptoYT) (Jan 2026) — the author's full tutorial covering all 4 strategies, risk management, and simulation-mode setup.
+
+[![Tutorial by @Mr_CryptoYT](docs/images/tweet-mr_cryptoyt.png)](https://x.com/Mr_CryptoYT/status/2010385899435991171)
+
 ---
 
 ## 📈 Version History
