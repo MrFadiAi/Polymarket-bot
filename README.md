@@ -167,6 +167,14 @@ TOTAL_MAX_LOSS_PCT=0.40      # 40% total loss = permanent halt
 # Polygon RPC (Optional - avoids the rate-limited public endpoint)
 # Get a free key from Alchemy/Infura/QuickNode and paste the HTTPS URL
 # POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# Dashboard security (Optional)
+# The dashboard binds to localhost (127.0.0.1) by default. To reach it from
+# another machine, set DASHBOARD_HOST=0.0.0.0 AND set a long random token —
+# the token is required on the API/WebSocket and the bot prints the full
+# dashboard URL (including ?token=...) at startup.
+# DASHBOARD_HOST=127.0.0.1
+# DASHBOARD_TOKEN=generate-a-long-random-string
 ```
 
 **⚠️ IMPORTANT:** 
@@ -188,9 +196,9 @@ npx tsx bot-with-dashboard.ts
 ### What happens next?
 1. The terminal will show startup logs.
 2. It will verify your wallet connection.
-3. **The Dashboard will open automatically in your browser** at `http://localhost:3001`.
+3. **The Dashboard URL is printed in the terminal** at `http://localhost:3001` (if you set `DASHBOARD_TOKEN`, the printed URL includes `?token=...` — open that exact link).
 
-If it doesn't open, just click that link.
+If it doesn't open by itself, copy the URL from the terminal.
 
 ---
 
@@ -204,17 +212,13 @@ The dashboard is your command center with **enhanced risk monitoring**.
 - **Balances**: Real-time view of your MATIC and USDC.
 - **PnL Panel**: Tracks your Profit and Loss per session.
 
-### 🆕 Risk Status Panel
-- **Daily Limit**: Shows usage of 5% daily loss limit
-- **Monthly Limit**: Shows usage of 15% monthly loss limit  
-- **Drawdown**: Current drawdown from peak capital
-- **Consecutive Tracker**: Win/loss streak counter
-- **Status Indicators**: 🔴 BREACHED or ✅ OK for each limit
+### Risk Status
+The bot enforces its risk limits internally (daily / monthly / drawdown / total-loss / loss-streak / exposure cap) and broadcasts the risk state — monthly PnL, current drawdown, peak capital, halt flag, streaks and open exposure — to the dashboard and terminal status line. A dedicated visual Risk Status panel is on the roadmap.
 
 ### Quick Actions
 - **Strategy Toggles**: Enable/disable strategies in real-time
-- **Emergency Stop**: Instantly halt all trading
-- **Panic Sell**: Close all positions (use with caution)
+- **Emergency Stop** (bottom of the Strategy Controls panel): instantly halts all strategies — trading stays blocked until you restart the bot
+- **Panic Sell** (bottom of the Strategy Controls panel): closes up to 10 open positions at market price, with double confirmation
 
 ---
 
