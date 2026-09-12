@@ -34,6 +34,7 @@ import { estimateTakerFee } from '../utils/price-utils.js';
 import { CopyPnlTracker } from './copy-pnl-tracker.js';
 import type { PreExecutionGuard } from '../utils/risk.js';
 import type { Position, ClosedPosition, ClosedPositionsParams, DataApiClient } from '../clients/data-api.js';
+import type { LeaderboardProvider } from './leaderboard-provider.js';
 
 // ============================================================================
 // Market Categorization (exported utilities)
@@ -108,6 +109,20 @@ export interface SmartMoneyWallet {
   volume: number;
   score: number;
   rank?: number;
+  /** Win rate 0..1. Only populated when an enriched LeaderboardProvider (e.g. Monid) supplies it. */
+  winRate?: number;
+  /** Profit factor. Only populated by an enriched LeaderboardProvider. */
+  profitFactor?: number;
+  /** Return on investment. Only populated by an enriched LeaderboardProvider. */
+  roi?: number;
+  /** Trader style flags. Only populated by an enriched LeaderboardProvider. */
+  tradingStyles?: {
+    isWhale?: boolean;
+    isDegen?: boolean;
+    isHighConviction?: boolean;
+    isMarketMaker?: boolean;
+    isContrarian?: boolean;
+  };
 }
 
 /**
@@ -276,6 +291,16 @@ export interface SmartMoneyServiceConfig {
   minPnl?: number;
   /** Cache TTL (default: 300000 = 5 min) */
   cacheTtl?: number;
+  /**
+   * Minimum win rate 0..1 (e.g. 0.6). Only enforced when an enriched LeaderboardProvider
+   * (e.g. Monid) is set, since Polymarket's free leaderboard does not return win rate.
+   */
+  minWinRate?: number;
+  /**
+   * Minimum profit factor (e.g. 1.5). Only enforced when an enriched LeaderboardProvider
+   * (e.g. Monid) is set.
+   */
+  minProfitFactor?: number;
 }
 
 // ============================================================================
@@ -767,7 +792,9 @@ export class SmartMoneyService {
   private realtimeService: RealtimeServiceV2;
   private tradingService: TradingService;
   private dataApi: DataApiClient | null;
-  private config: Required<SmartMoneyServiceConfig>;
+  private leaderboardProvider: LeaderboardProvider | null;
+  private config: Required<Pick<SmartMoneyServiceConfig, 'minPnl' | 'cacheTtl'>> &
+    Pick<SmartMoneyServiceConfig, 'minWinRate' | 'minProfitFactor'>;
 
   private smartMoneyCache: Map<string, SmartMoneyWallet> = new Map();
   private smartMoneySet: Set<string> = new Set();
@@ -784,16 +811,20 @@ export class SmartMoneyService {
     realtimeService: RealtimeServiceV2,
     tradingService: TradingService,
     config: SmartMoneyServiceConfig = {},
-    dataApi?: DataApiClient
+    dataApi?: DataApiClient,
+    leaderboardProvider?: LeaderboardProvider
   ) {
     this.walletService = walletService;
     this.realtimeService = realtimeService;
     this.tradingService = tradingService;
     this.dataApi = dataApi ?? null;
+    this.leaderboardProvider = leaderboardProvider ?? null;
 
     this.config = {
       minPnl: config.minPnl ?? 1000,
       cacheTtl: config.cacheTtl ?? 300000,
+      minWinRate: config.minWinRate,
+      minProfitFactor: config.minProfitFactor,
     };
   }
 
@@ -846,6 +877,15 @@ export class SmartMoneyService {
     entry[field]++;
   }
 
+  /**
+   * Set an optional enriched LeaderboardProvider (e.g. Monid) after construction.
+   * When set, getSmartMoneyList() uses it so win-rate / profit-factor filtering works.
+   * When unset, behavior is unchanged (free Polymarket leaderboard path).
+   */
+  setLeaderboardProvider(provider: LeaderboardProvider): void {
+    this.leaderboardProvider = provider;
+  }
+
   // ============================================================================
   // Smart Money Info
   // ============================================================================
@@ -856,6 +896,40 @@ export class SmartMoneyService {
   async getSmartMoneyList(limit: number = 100): Promise<SmartMoneyWallet[]> {
     if (this.isCacheValid()) {
       return Array.from(this.smartMoneyCache.values());
+    }
+
+    // Enriched path: when a LeaderboardProvider is configured (e.g. Monid), use it so
+    // win-rate / profit-factor filtering actually applies. Default path below is unchanged.
+    if (this.leaderboardProvider) {
+      const rows = await this.leaderboardProvider.fetchLeaderboard({
+        period: 'all',
+        limit,
+        minPnl: this.config.minPnl,
+        minWinRate: this.config.minWinRate,
+        minProfitFactor: this.config.minProfitFactor,
+      });
+
+      const enriched: SmartMoneyWallet[] = rows.map((r, i) => {
+        const volume = r.volume ?? 0;
+        const wallet: SmartMoneyWallet = {
+          address: r.address.toLowerCase(),
+          name: r.name,
+          pnl: r.pnl,
+          volume,
+          score: Math.min(100, Math.round((r.pnl / 100000) * 50 + (volume / 1000000) * 50)),
+          rank: r.rank ?? i + 1,
+          winRate: r.winRate,
+          profitFactor: r.profitFactor,
+          roi: r.roi,
+          tradingStyles: r.tradingStyles,
+        };
+        this.smartMoneyCache.set(wallet.address, wallet);
+        this.smartMoneySet.add(wallet.address);
+        return wallet;
+      });
+
+      this.cacheTimestamp = Date.now();
+      return enriched;
     }
 
     const leaderboardPage = await this.walletService.getLeaderboard(0, limit);
