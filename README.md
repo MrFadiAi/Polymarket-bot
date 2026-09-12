@@ -7,6 +7,12 @@
 
 **Created by**: [@Mr_CryptoYT](https://x.com/Mr_CryptoYT)
 
+## 🎥 Community Tutorials
+
+| 📹 Video Walkthrough — [@dravenip](https://x.com/dravenip) (Sep 2026) | 📖 Complete Written Guide — [@Mr_CryptoYT](https://x.com/Mr_CryptoYT) (Jan 2026) |
+| :---: | :---: |
+| <a href="https://x.com/dravenip/status/2098384813921018281"><img src="docs/images/tweet-dravenip.png" width="240" alt="Video walkthrough of the Polymarket bot by @dravenip"></a> | <a href="https://x.com/Mr_CryptoYT/status/2010385899435991171"><img src="docs/images/tweet-mr_cryptoyt.png" width="240" alt="Complete Arabic guide to the Polymarket bot by @Mr_CryptoYT"></a> |
+
 ## 🆕 What's New in v3.1 (January 2026)
 
 ### 🔴 **Professional-Grade Risk Management**
@@ -327,16 +333,7 @@ If something goes wrong:
 - **Original SDK Documentation**: For developers who want to use the raw SDK, see [SDK_DOCUMENTATION.md](SDK_DOCUMENTATION.md).
 - **Beginner Guide**: Step-by-step tutorial in [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md).
 - **Quick Start**: Fast setup guide in [QUICKSTART.md](QUICKSTART.md).
-
-### 🎥 Community Tutorials
-
-**Polymarket Trading Bot — Video Walkthrough** by [@dravenip](https://x.com/dravenip) (Sep 2026) — quick video overview of the bot's strategies and dashboard.
-
-[![Tutorial by @dravenip](docs/images/tweet-dravenip.png)](https://x.com/dravenip/status/2098384813921018281)
-
-**الدليل الشامل لبوت التداول على Polymarket 🤖 — Complete Written Guide (Arabic)** by [@Mr_CryptoYT](https://x.com/Mr_CryptoYT) (Jan 2026) — the author's full tutorial covering all 4 strategies, risk management, and simulation-mode setup.
-
-[![Tutorial by @Mr_CryptoYT](docs/images/tweet-mr_cryptoyt.png)](https://x.com/Mr_CryptoYT/status/2010385899435991171)
+- **Community Tutorials**: Video walkthrough and full written guide — see [🎥 Community Tutorials](#-community-tutorials) at the top of this page.
 
 ---
 
