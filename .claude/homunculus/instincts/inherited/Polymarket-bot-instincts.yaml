@@ -1,0 +1,359 @@
+# Instincts generated from https://github.com/MrFadiAi/Polymarket-bot
+# Generated: 2026-06-22T23:11:48.619Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: Polymarket-bot-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: feat
+
+## Evidence
+
+- 1 commits analyzed
+- Detected conventional commit pattern
+- Examples: feat(smart-money): optional LeaderboardProvider to enforce win-rate / profit-factor filtering
+
+---
+id: Polymarket-bot-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Commit Length
+
+## Action
+
+Write moderate-length commit messages (~93 characters)
+
+## Evidence
+
+- Average commit message length: 93 chars
+- Based on 1 commits
+
+---
+id: Polymarket-bot-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Naming Files
+
+## Action
+
+Use kebab-case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: kebab-case
+
+---
+id: Polymarket-bot-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: Polymarket-bot-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: Polymarket-bot-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: services
+
+---
+id: Polymarket-bot-test-colocate
+trigger: "when writing tests"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Test Colocate
+
+## Action
+
+Place test file next to the source file (e.g., Button.test.tsx next to Button.tsx)
+
+## Evidence
+
+- Colocated test pattern detected
+- Tests live alongside source files
+
+---
+id: polymarket-bot-instinct-file-naming
+trigger: "When creating a new file"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct File Naming
+
+## Action
+
+Name the file using kebab-case
+
+## Evidence
+
+- Pattern in namingConventions.files
+- Observed in src/ and examples/
+
+---
+id: polymarket-bot-instinct-function-naming
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Function Naming
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: polymarket-bot-instinct-class-naming
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Class Naming
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: polymarket-bot-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Constant Naming
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: polymarket-bot-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: polymarket-bot-instinct-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: polymarket-bot-instinct-commit-format
+trigger: "When making a git commit"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Commit Format
+
+## Action
+
+Format the commit message using the conventional commit style, starting with a 'feat' prefix for features
+
+## Evidence
+
+- Pattern in commits.type
+- Example: 'feat(smart-money): optional LeaderboardProvider...'
+
+---
+id: polymarket-bot-instinct-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Commit Length
+
+## Action
+
+Keep the commit message concise, around 93 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: polymarket-bot-instinct-test-location
+trigger: "When adding tests for a module"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Test Location
+
+## Action
+
+Colocate test files with the code they test
+
+## Evidence
+
+- Pattern in architecture.testLocation
+
+---
+id: polymarket-bot-instinct-test-folder
+trigger: "When organizing source and example code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Test Folder
+
+## Action
+
+Place code in 'src' and examples in 'examples' folders
+
+## Evidence
+
+- Pattern in architecture.commonFolders
+
+---
+id: polymarket-bot-instinct-error-handling
+trigger: "When handling errors in code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: MrFadiAi/Polymarket-bot
+---
+
+# Polymarket Bot Instinct Error Handling
+
+## Action
+
+Use try-catch blocks for error handling, without custom error classes or global handlers
+
+## Evidence
+
+- Pattern in errorHandling.style
+- Pattern in errorHandling.customErrorClasses
+
