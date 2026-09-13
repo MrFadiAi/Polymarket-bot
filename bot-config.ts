@@ -319,6 +319,12 @@ function canTrade(): boolean {
   if (state.isPaused && Date.now() < state.pauseUntil) return false;
   if (state.isPaused && Date.now() >= state.pauseUntil) {
     state.isPaused = false;
+    // Clear the loss streak on resume — otherwise Layer 5 re-arms the pause
+    // on every canTrade() call and the "60 min" break never actually ends.
+    if (state.consecutiveLosses > 0) {
+      log('INFO', `Loss streak reset on resume (was ${state.consecutiveLosses})`);
+      state.consecutiveLosses = 0;
+    }
     log('INFO', 'Bot resumed after cooldown');
   }
 
@@ -478,15 +484,20 @@ function judgeWallet(
 async function refreshExposure(sdk: PolymarketSDK) {
   try {
     const address = sdk.tradingService.getAddress();
-    const positions = await sdk.subgraph.getUserPositions(address);
+    // data-api positions (conditionId + size + avgPrice) at COST BASIS —
+    // the subgraph UserPosition shape carries none of the value fields the
+    // first implementation read, so exposure was permanently $0.
+    const positions = await sdk.wallets.getWalletPositions(address) as unknown as Array<Record<string, unknown>>;
     let total = 0;
     const perMarket: Record<string, number> = {};
-    for (const p of positions as unknown as Array<Record<string, unknown>>) {
-      const v = Math.abs(Number(p.currentValue ?? p.value ?? p.notional ?? 0));
-      if (!Number.isFinite(v) || v <= 0) continue;
-      total += v;
-      const key = String(p.conditionId ?? p.market ?? p.marketId ?? 'unknown');
-      perMarket[key] = (perMarket[key] ?? 0) + v;
+    for (const p of positions) {
+      const size = Number(p.size);
+      const avgPrice = Number(p.avgPrice);
+      if (!Number.isFinite(size) || !Number.isFinite(avgPrice) || size <= 0 || avgPrice <= 0) continue;
+      const cost = size * avgPrice;
+      total += cost;
+      const key = String(p.conditionId ?? p.asset ?? 'unknown');
+      perMarket[key] = (perMarket[key] ?? 0) + cost;
     }
     state.totalExposureUsd = total;
     state.perMarketExposureUsd = perMarket;

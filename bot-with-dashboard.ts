@@ -22,7 +22,7 @@ import {
 import { CTFClient } from './src/clients/ctf-client.js';
 import { startDashboard, dashboardEmitter } from './src/dashboard/index.js';
 import type { BotState, BotConfig, LogLevel, DipArbSignal, SmartMoneySignal } from './src/dashboard/types.js';
-import { addSession, createSessionFromState, type TradeRecord } from './src/dashboard/session-history.js';
+import { loadHistory, saveHistory, createSessionFromState, type TradeRecord, type SessionSummary } from './src/dashboard/session-history.js';
 import { resolvePolygonRpcUrl } from './src/utils/rpc.js';
 import {
   computeWalletQualityFromPositions,
@@ -40,9 +40,11 @@ import { fetchClosedPnls } from './src/utils/closed-positions.js';
 // CONFIGURATION (same as bot-config.ts)
 // ============================================================================
 
+const CAPITAL_USD = parseFloat(process.env.CAPITAL_USD || '250');
+
 let CONFIG = {
   capital: {
-    totalUsd: parseFloat(process.env.CAPITAL_USD || '250'),
+    totalUsd: CAPITAL_USD,
     maxPerTradePct: 0.02,  // 🔴 FIXED: Reduced from 3% to 2%
     maxPerMarketPct: 0.10,
     maxTotalExposurePct: 0.30,
@@ -93,7 +95,10 @@ let CONFIG = {
     checkLastNTrades: 10,  // Analyze last 10 trades
 
     sizeScale: 0.1,
-    maxSizePerTrade: 15,  // Up from 10
+    // Cap copies at the risk contract's per-trade limit — a copy above
+    // maxPerTradePct × capital would be silently skipped by the risk guard
+    // anyway (guard checks the USD notional before the order).
+    maxSizePerTrade: Math.min(15, CAPITAL_USD * 0.02),
     maxSlippage: 0.03,
     minTradeSize: 10,  // Up from 5
     delay: 500,
@@ -168,6 +173,8 @@ const state: BotState = {
   consecutiveLosses: 0,
   consecutiveWins: 0,  // 🔴 NEW
   tradesExecuted: 0,
+  wins: 0,
+  losses: 0,
   isPaused: false,
   pauseUntil: 0,
 
@@ -322,6 +329,12 @@ function canTrade(): boolean {
   if (state.isPaused && Date.now() < state.pauseUntil) return false;
   if (state.isPaused && Date.now() >= state.pauseUntil) {
     state.isPaused = false;
+    // Clear the loss streak on resume — otherwise Layer 5 re-arms the pause
+    // on every canTrade() call and the "60 min" break never actually ends.
+    if (state.consecutiveLosses > 0) {
+      log('INFO', `Loss streak reset on resume (was ${state.consecutiveLosses})`);
+      state.consecutiveLosses = 0;
+    }
     log('INFO', 'Bot resumed after cooldown');
     updateDashboard();
   }
@@ -443,13 +456,16 @@ function recordRealized(profit: number) {
   state.monthlyPnL += profit;
   state.totalPnL += profit;
 
-  // Track consecutive wins/losses
+  // Track consecutive wins/losses + real W/L counters (the dashboard
+  // previously fabricated win-rate from PnL heuristics)
   if (profit < 0) {
     state.consecutiveLosses++;
     state.consecutiveWins = 0;
+    state.losses++;
   } else {
     state.consecutiveLosses = 0;
     state.consecutiveWins++;
+    state.wins++;
   }
 
   updateDashboard();
@@ -486,20 +502,84 @@ let copySubscription: AutoCopyTradingSubscription | null = null;
 let activeSdk: PolymarketSDK | null = null;
 const directEntries = new Map<string, { price: number; size: number; time: number }>();
 
+// Session history: per-trade records feed createSessionFromState; the
+// session is persisted (upserted by id) every 5 min and on shutdown so a
+// crash never loses more than 5 minutes of history.
+const sessionTrades: TradeRecord[] = [];
+
+function recordTradeForHistory(trade: Omit<TradeRecord, 'id' | 'timestamp'>) {
+  sessionTrades.push({
+    id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    ...trade,
+  });
+  if (sessionTrades.length > 500) sessionTrades.splice(0, sessionTrades.length - 500);
+}
+
+function persistSession() {
+  try {
+    const session = createSessionFromState(
+      state.startTime,
+      {
+        totalPnL: state.totalPnL,
+        tradesExecuted: state.tradesExecuted,
+        smartMoneyTrades: state.smartMoneyTrades,
+        arbTrades: state.arbTrades,
+        dipArbTrades: state.dipArbTrades,
+        directTrades: state.directTrades,
+        arbProfit: state.arbProfit,
+        followedWallets: state.followedWallets,
+        splits: state.splits,
+        merges: state.merges,
+        redeems: state.redeems,
+        swaps: state.swaps,
+        usdcBalance: state.usdcBalance,
+        usdcEBalance: state.usdcEBalance,
+      },
+      {
+        dryRun: CONFIG.dryRun,
+        smartMoney: { enabled: CONFIG.smartMoney.enabled },
+        arbitrage: { enabled: CONFIG.arbitrage.enabled },
+        dipArb: { enabled: CONFIG.dipArb.enabled },
+        directTrading: { enabled: CONFIG.directTrading.enabled },
+      },
+      sessionTrades,
+    );
+
+    const history = loadHistory();
+    const idx = history.sessions.findIndex(s => s.id === session.id);
+    if (idx >= 0) history.sessions[idx] = session;
+    else history.sessions.unshift(session);
+    history.totalSessions = history.sessions.length;
+    history.totalProfit = history.sessions.reduce((sum, s) => sum + s.totalPnL, 0);
+    history.totalTrades = history.sessions.reduce((sum, s) => sum + s.totalTrades, 0);
+    const totalWins = history.sessions.reduce((sum, s) => sum + s.wins, 0);
+    history.overallWinRate = history.totalTrades > 0 ? (totalWins / history.totalTrades) * 100 : 0;
+    if (history.sessions.length > 100) history.sessions = history.sessions.slice(0, 100);
+    saveHistory(history);
+  } catch { /* history persistence must never break trading */ }
+}
+
 // 🔴 v3.2 P7: chain-seeded exposure refresh — source of truth for
 // Layer 6 + per-market caps. Replaces wholesale on each 60s tick; best-effort.
+// Uses data-api positions (conditionId + size + avgPrice) valued at COST
+// BASIS: cost is drift-stable for reconcilePnl (market-value exposure would
+// false-positive on unrealized swings) and the subgraph UserPosition shape
+// carries none of the value fields.
 async function refreshExposure(sdk: PolymarketSDK) {
   try {
     const address = sdk.tradingService.getAddress();
-    const positions = await sdk.subgraph.getUserPositions(address);
+    const positions = await sdk.wallets.getWalletPositions(address) as unknown as Array<Record<string, unknown>>;
     let total = 0;
     const perMarket: Record<string, number> = {};
-    for (const p of positions as unknown as Array<Record<string, unknown>>) {
-      const v = Math.abs(Number(p.currentValue ?? p.value ?? p.notional ?? 0));
-      if (!Number.isFinite(v) || v <= 0) continue;
-      total += v;
-      const key = String(p.conditionId ?? p.market ?? p.marketId ?? 'unknown');
-      perMarket[key] = (perMarket[key] ?? 0) + v;
+    for (const p of positions) {
+      const size = Number(p.size);
+      const avgPrice = Number(p.avgPrice);
+      if (!Number.isFinite(size) || !Number.isFinite(avgPrice) || size <= 0 || avgPrice <= 0) continue;
+      const cost = size * avgPrice;
+      total += cost;
+      const key = String(p.conditionId ?? p.asset ?? 'unknown');
+      perMarket[key] = (perMarket[key] ?? 0) + cost;
     }
     state.totalExposureUsd = total;
     state.perMarketExposureUsd = perMarket;
@@ -570,6 +650,7 @@ async function startSmartMoneyCopy(sdk: PolymarketSDK) {
       onCopyPnl: (info) => {
         log('TRADE', `Copy closed ${info.closedSize.toFixed(2)} sh — PnL $${info.realizedUsd.toFixed(2)}`);
         recordRealized(info.realizedUsd);
+        recordTradeForHistory({ strategy: 'smartMoney', market: info.tokenId.slice(0, 12), side: info.side, size: info.closedSize, price: 0, profit: info.realizedUsd });
         if (CONFIG.dryRun && state.paper) {
           state.paper.pnl += info.realizedUsd;
           state.paper.balance += info.realizedUsd;
@@ -610,6 +691,9 @@ async function executeClosePosition(sdk: PolymarketSDK, tokenId: string, size: n
       log('TRADE', `✅ Position closed: ${size} shares of ${tokenId.slice(0, 10)}... (PnL est $${realizedPnL.toFixed(2)})`);
       if (exitPrice > 0) {
         recordRealized(realizedPnL);
+        if (entry) {
+          recordTradeForHistory({ strategy: 'direct', market: tokenId.slice(0, 12), side: 'SELL', size, price: exitPrice, profit: realizedPnL });
+        }
       } else {
         log('WARN', `Close PnL untracked for ${tokenId.slice(0, 10)}...: no known exit price`);
       }
@@ -806,6 +890,7 @@ async function setupArbitrage(_sdk: PolymarketSDK) {
       state.arbProfit += result.profit || 0;
       recordEntry('arbitrage');
       recordRealized(result.profit || 0);
+      recordTradeForHistory({ strategy: 'arbitrage', market: state.activeArbMarket ?? 'unknown', side: 'BUY', size: result.size, price: 0, profit: result.profit || 0 });
       log('TRADE', `Arb trade executed: +$${(result.profit || 0).toFixed(2)} profit`);
     }
   });
@@ -953,7 +1038,8 @@ async function setupDipArb(sdk: PolymarketSDK) {
       const shares = r.leg2?.shares ?? 0;
       const netProfit = (r.profit ?? 0) * shares;
       recordRealized(netProfit);
-      log('TRADE', `DipArb round ${r.roundId.slice(0, 12)} completed: ${shares.toFixed(1)} sh, net +$${netProfit.toFixed(2)}${r.merged ? ' (merged)' : ''}`);
+      recordTradeForHistory({ strategy: 'dipArb', market: state.activeDipArbMarket ?? 'unknown', side: 'BUY', size: shares, price: 0, profit: netProfit });
+      log('TRADE', `DipArb round ${r.roundId.slice(0, 12)} completed: ${shares.toFixed(1)} sh, net +$${netProfit.toFixed(2)}`);
     } else {
       // expired / partial: book only when Leg1 was actually exited for a price
       const leg1 = r.leg1;
@@ -1252,16 +1338,23 @@ async function setupDirectTrading(sdk: PolymarketSDK) {
                 log('WARN', `Direct trade skipped: sized notional below $${CONFIG.capital.minOrderUsd} floor after ${state.consecutiveLosses} consecutive losses`);
                 continue;
               }
+              // Same per-trade/per-market/total caps the other strategies
+              // face — sizing alone can reach maxPositionPct ($12.50), 2.5×
+              // the per-trade guard.
+              if (!canOpenPosition(String(market.conditionId), amountUsdc)) {
+                continue;
+              }
 
               if (CONFIG.dryRun) {
-                // DRY RUN: book entry + paper movement; realized PnL comes
-                // when the position closes (same accounting as live).
+                // DRY RUN: book entry + paper movement. Realized PnL for
+                // direct positions is only booked on a real close, which the
+                // simulator never performs — so no directEntries record is
+                // kept (it could never be consumed and would grow unbounded).
                 recordEntry('direct');
                 if (state.paper) {
                   state.paper.trades++;
                   state.paper.totalVolume += amountUsdc;
                 }
-                directEntries.set(targetToken.tokenId, { price, size: amountUsdc / price, time: Date.now() });
                 log('TRADE', `[SIMULATION] Direct trend buy: ${market.question?.slice(0, 40)}... → ${trend.toUpperCase()} (Buy ${targetToken.outcome}) @ ${price.toFixed(2)}`);
                 updateDashboard();
               } else {
@@ -1429,9 +1522,11 @@ async function main() {
   await setupArbitrage(sdk);
   await setupDipArb(sdk);
 
-  // v3.2: exposure is chain-seeded every 60s; PnL reconciled every 5 min
+  // v3.2: exposure is chain-seeded every 60s; PnL reconciled every 5 min;
+  // session history is upserted every 5 min so a crash loses at most that
   setInterval(() => void refreshExposure(sdk), 60_000);
   setInterval(() => void reconcilePnl(), 5 * 60_000);
+  setInterval(() => persistSession(), 5 * 60_000);
 
   // Periodic state update
   setInterval(() => {
@@ -1605,6 +1700,10 @@ async function main() {
               log('INFO', `Initializing Smart Money...`);
               // Call the lazy initializer we created
               initializeSmartMoney(sdk);
+              // initializeSmartMoney is idempotent (guards on
+              // isSmartMoneyInitialized) and would silently skip after the
+              // first run — restart copy execution explicitly on re-enable.
+              await startSmartMoneyCopy(sdk);
             } else {
               log('INFO', `Smart Money monitoring disabled.`);
               stopSmartMoneyCopy(); // v3.2: also stop live copy execution
@@ -1679,6 +1778,7 @@ async function main() {
 
   process.on('SIGINT', async () => {
     console.log('\n\nShutting down...');
+    persistSession(); // final history checkpoint
     stopSmartMoneyCopy();
     if (arbService) await arbService.stop();
     await sdk.dipArb.stop();

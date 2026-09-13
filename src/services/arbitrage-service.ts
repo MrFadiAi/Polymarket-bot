@@ -641,10 +641,17 @@ export class ArbitrageService extends EventEmitter {
    */
   async execute(opportunity: ArbitrageOpportunity): Promise<ArbitrageExecutionResult> {
     // Audit #4: risk gate first — cheapest check, no state touched.
+    // recommendedSize is a PAIR COUNT, not USDC — convert to notional so the
+    // per-trade USD cap compares like with like (long: pair cost; short:
+    // pair sale proceeds).
+    const ep = opportunity.effectivePrices;
+    const intentUsd = opportunity.type === 'long'
+      ? opportunity.recommendedSize * (ep.buyYes + ep.buyNo)
+      : opportunity.recommendedSize * (ep.sellYes + ep.sellNo);
     const blockReason = this.config.preExecutionGuard?.({
       strategy: 'arbitrage',
       side: opportunity.type === 'long' ? 'BUY' : 'SELL',
-      usdcAmount: opportunity.recommendedSize,
+      usdcAmount: intentUsd,
       marketKey: this.market?.conditionId ?? 'unknown',
     });
     if (blockReason) {

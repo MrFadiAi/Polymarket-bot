@@ -74,7 +74,9 @@ export function startDashboard(options: number | DashboardOptions = 3001): http.
 
     // v3.2 auth: /api/* requires the token when one is configured.
     // Static files and /health stay open — the app shell has no data.
-    if (token && url.pathname.startsWith('/api/')) {
+    // Exact first-segment match (a startsWith('/api/') gate would let
+    // lookalike paths through if future routes are added).
+    if (token && url.pathname.split('/')[1] === 'api') {
       const provided = url.searchParams.get('token')
         ?? (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
       if (!provided) {
@@ -179,6 +181,16 @@ export function startDashboard(options: number | DashboardOptions = 3001): http.
   wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (req, socket, head) => {
+    // Cross-site WS hijack guard: browsers always send Origin on WS; a page
+    // on another site must not be able to open this socket and send
+    // commands. Non-browser clients (no Origin) are allowed through this
+    // check and rely on the token when one is configured.
+    const origin = req.headers.origin;
+    if (origin && !LOCAL_ORIGIN_RE.test(origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     if (token) {
       const u = new URL(req.url || '/', `http://localhost:${port}`);
       if (u.searchParams.get('token') !== token) {

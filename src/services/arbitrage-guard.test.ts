@@ -41,8 +41,10 @@ describe('ArbitrageService preExecutionGuard (audit #4)', () => {
       },
     });
     await svc.execute(opp);
+    // usdcAmount is the USD NOTIONAL, not the raw pair count:
+    // 50 pairs × (buyYes 0.4 + buyNo 0.5) = $45
     expect(seen).toEqual([
-      { strategy: 'arbitrage', side: 'BUY', usdcAmount: 50, marketKey: 'unknown' },
+      { strategy: 'arbitrage', side: 'BUY', usdcAmount: 45, marketKey: 'unknown' },
     ]);
   });
 });
