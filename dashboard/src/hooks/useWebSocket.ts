@@ -22,6 +22,7 @@ export function useWebSocket() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
 
@@ -101,13 +102,18 @@ export function useWebSocket() {
     };
   }, [connect]);
 
-  const sendCommand = (command: string, payload: unknown) => {
+  const sendCommand = (command: string, payload: unknown): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'command', command, payload }));
-    } else {
-      console.error('[Dashboard] Cannot send command, WebSocket not connected');
+      setCommandError(null);
+      return true;
     }
+    console.error('[Dashboard] Cannot send command, WebSocket not connected');
+    // Silent failures are unacceptable for emergency controls — surface it
+    setCommandError(`"${command}" was NOT sent — dashboard is not connected to the bot`);
+    window.setTimeout(() => setCommandError(null), 5000);
+    return false;
   };
 
-  return { state, config, logs, connected, error, sendCommand };
+  return { state, config, logs, connected, error, commandError, sendCommand };
 }

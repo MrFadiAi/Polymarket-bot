@@ -30,6 +30,8 @@ export interface BotState {
   totalPnL: number;
   consecutiveLosses: number;
   tradesExecuted: number;
+  wins?: number;
+  losses?: number;
   isPaused: boolean;
   pauseUntil: number;
 

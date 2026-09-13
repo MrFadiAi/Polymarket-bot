@@ -4,6 +4,7 @@ import {
   Header,
   BalanceCards,
   PnLPanel,
+  RiskPanel,
   TrendIndicators,
   StrategyGrid,
   OnChainStats,
@@ -24,8 +25,9 @@ type Page = 'dashboard' | 'history' | 'positions';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
-  const { state, config, logs, connected, error, sendCommand } = useWebSocket();
+  const { state, config, logs, connected, error, commandError, sendCommand } = useWebSocket();
   const isDryRun = config?.dryRun ?? true;
+  const isHalted = state?.permanentlyHalted ?? false;
 
   const handleClosePosition = (tokenId: string, size: number) => {
     sendCommand('closePosition', { tokenId, size });
@@ -82,6 +84,15 @@ function App() {
   // Main dashboard - Compact trading-focused layout
   return (
     <div className={`min-h-screen bg-poly-dark text-white ${isDryRun ? 'dry-run-breathing' : 'live-mode-breathing'}`}>
+      {/* Permanent-halt banner — an emergency-stopped bot must be unmistakable */}
+      {isHalted && (
+        <div className="bg-red-600/30 border-b border-red-500/50 px-4 py-2 text-center">
+          <span className="text-red-200 font-semibold text-sm">
+            🛑 BOT PERMANENTLY HALTED — all trading is blocked. Restart the bot to resume.
+          </span>
+        </div>
+      )}
+
       {/* Mode Banner - Compact */}
       <div className={`${isDryRun ? 'bg-red-500/20 border-red-500/30' : 'bg-green-500/20 border-green-500/30'} border-b px-4 py-1.5 text-center`}>
         <span className={`${isDryRun ? 'text-red-400' : 'text-green-400'} font-medium text-xs flex items-center justify-center gap-2`}>
@@ -89,6 +100,13 @@ function App() {
           {isDryRun ? 'DRY RUN — No real trades' : 'LIVE — Real money trading'}
         </span>
       </div>
+
+      {/* Command failure feedback (e.g. emergency stop clicked while disconnected) */}
+      {commandError && (
+        <div className="bg-orange-500/20 border-b border-orange-500/40 px-4 py-1.5 text-center text-xs text-orange-300">
+          ⚠️ {commandError}
+        </div>
+      )}
 
       {/* Connection Status */}
       <ConnectionStatus connected={connected} error={error} />
@@ -107,7 +125,7 @@ function App() {
         {/* Row 1: Quick Stats + Balances side by side */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <QuickStats state={state} config={config} />
-          <BalanceCards state={state} />
+          <BalanceCards state={state} config={config} />
         </div>
 
         {/* Row 2: Main Trading Grid - 4 columns */}
@@ -117,6 +135,9 @@ function App() {
           <PnLPanel state={state} config={config} />
           <SessionSummary state={state} />
         </div>
+
+        {/* Row 2.5: Risk Status */}
+        <RiskPanel state={state} config={config} />
 
         {/* Row 3: Smart Money (main) + Side Panel (Trends + Strategies + OnChain) */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -129,6 +150,7 @@ function App() {
               onToggle={handleToggleStrategy}
               onEmergencyStop={handleEmergencyStop}
               onPanicSell={handlePanicSell}
+              halted={isHalted}
             />
             <TrendIndicators state={state} />
             <StrategyGrid state={state} config={config} />

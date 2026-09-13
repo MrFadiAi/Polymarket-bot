@@ -8,12 +8,12 @@ export function SessionSummary({ state }: SessionSummaryProps) {
   const trades = state?.tradesExecuted ?? 0;
   const totalPnL = state?.totalPnL ?? 0;
   const avgProfit = trades > 0 ? totalPnL / trades : 0;
-  
-  // Calculate estimated wins/losses based on P&L
-  const estimatedWins = trades > 0 ? Math.round(trades * 0.5 + (totalPnL > 0 ? totalPnL / 10 : totalPnL / 20)) : 0;
-  const wins = Math.max(0, Math.min(trades, estimatedWins));
-  const losses = Math.max(0, trades - wins);
-  const winRate = trades > 0 ? (wins / trades) * 100 : 0;
+
+  // Real counters from the backend — previously estimated from P&L heuristics
+  const wins = state?.wins ?? 0;
+  const losses = state?.losses ?? 0;
+  const closed = wins + losses;
+  const winRate = closed > 0 ? (wins / closed) * 100 : 0;
 
   const arbProfit = state?.arbProfit ?? 0;
   const smartMoneyTrades = state?.smartMoneyTrades ?? 0;

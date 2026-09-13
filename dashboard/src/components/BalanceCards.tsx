@@ -1,7 +1,8 @@
-import type { BotState } from '../types';
+import type { BotState, BotConfig } from '../types';
 
 interface BalanceCardsProps {
   state: BotState | null;
+  config: BotConfig | null;
 }
 
 interface BalanceCardProps {
@@ -34,11 +35,9 @@ function BalanceCard({ icon, label, value, subLabel, gradient, iconBg }: Balance
   );
 }
 
-export function BalanceCards({ state }: BalanceCardsProps) {
-  const matic = state?.maticBalance ?? 0;
-  const usdc = state?.usdcBalance ?? 0;
-  const usdce = state?.usdcEBalance ?? 0;
-  const total = usdc + usdce;
+export function BalanceCards({ state, config }: BalanceCardsProps) {
+  const isDryRun = config?.dryRun ?? true;
+  const paper = state?.paper;
 
   const formatCurrency = (value: number, decimals: number = 2) => {
     return value.toLocaleString(undefined, {
@@ -46,6 +45,52 @@ export function BalanceCards({ state }: BalanceCardsProps) {
       maximumFractionDigits: decimals,
     });
   };
+
+  // In DRY RUN the real wallet balances are irrelevant — show what the
+  // simulation is actually trading with (paper wallet)
+  if (isDryRun && paper) {
+    return (
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+        <BalanceCard
+          icon="📝"
+          label="Paper Balance"
+          value={`$${formatCurrency(paper.balance)}`}
+          subLabel="Simulated"
+          gradient="bg-gradient-to-br from-cyan-500/10 to-cyan-500/5"
+          iconBg="bg-cyan-500/20"
+        />
+        <BalanceCard
+          icon="📈"
+          label="Session PnL"
+          value={`${paper.pnl >= 0 ? '+' : '-'}$${formatCurrency(Math.abs(paper.pnl))}`}
+          subLabel="Simulated"
+          gradient="bg-gradient-to-br from-green-500/10 to-green-500/5"
+          iconBg="bg-green-500/20"
+        />
+        <BalanceCard
+          icon="🔁"
+          label="Sim Trades"
+          value={String(paper.trades)}
+          subLabel="This session"
+          gradient="bg-gradient-to-br from-purple-500/10 to-purple-500/5"
+          iconBg="bg-purple-500/20"
+        />
+        <BalanceCard
+          icon="💵"
+          label="Sim Volume"
+          value={`$${formatCurrency(paper.totalVolume)}`}
+          subLabel="Notional traded"
+          gradient="bg-gradient-to-br from-blue-500/10 to-blue-500/5"
+          iconBg="bg-blue-500/20"
+        />
+      </div>
+    );
+  }
+
+  const matic = state?.maticBalance ?? 0;
+  const usdc = state?.usdcBalance ?? 0;
+  const usdce = state?.usdcEBalance ?? 0;
+  const total = usdc + usdce;
 
   return (
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">

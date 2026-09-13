@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import type { BotState, BotConfig } from '../types';
-import { NetworkStatus } from './NetworkStatus';
 
 interface HeaderProps {
   state: BotState | null;
@@ -13,7 +12,6 @@ interface HeaderProps {
 
 export function Header({ state, config, connected, onHistoryClick, onPositionsClick, onToggleDryRun }: HeaderProps) {
   const [runtime, setRuntime] = useState('0m');
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!state?.startTime) return;
@@ -39,17 +37,8 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
   }, [state?.startTime]);
 
   const isPaused = state?.isPaused ?? false;
+  const isHalted = state?.permanentlyHalted ?? false;
   const isDryRun = config?.dryRun ?? true;
-
-  // Mock wallet address (in real app, this would come from config/state)
-  const walletAddress = '0xaF98e0638671abD5140Ad981Ff4c01869F3410de';
-  const shortWallet = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
-
-  const copyWallet = async () => {
-    await navigator.clipboard.writeText(walletAddress);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const signalCount = state?.dipArb?.signals?.length ?? 0;
   const opportunityCount = state?.arbitrage?.opportunitiesFound ?? 0;
@@ -76,28 +65,25 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
           <div className="flex items-center gap-2">
             <span
               className={`badge flex items-center gap-1.5 ${connected
-                ? isPaused
-                  ? 'badge-yellow'
-                  : 'badge-green'
+                ? isHalted
+                  ? 'badge-red'
+                  : isPaused
+                    ? 'badge-yellow'
+                    : 'badge-green'
                 : 'badge-red'
                 }`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${connected
-                ? isPaused ? 'bg-yellow-400' : 'bg-green-400 animate-pulse'
+                ? isHalted || isPaused ? 'bg-yellow-400' : 'bg-green-400 animate-pulse'
                 : 'bg-red-400'
                 }`} />
-              {connected ? (isPaused ? 'PAUSED' : 'RUNNING') : 'OFFLINE'}
+              {connected ? (isHalted ? '🛑 HALTED' : isPaused ? 'PAUSED' : 'RUNNING') : 'OFFLINE'}
             </span>
 
             <span className={`badge ${isDryRun ? 'badge-blue' : 'badge-green'}`}>
               {isDryRun ? '🧪 SIMULATION' : '💰 LIVE'}
             </span>
           </div>
-        </div>
-
-        {/* Center: Network Status */}
-        <div className="hidden lg:block">
-          <NetworkStatus connected={connected} />
         </div>
 
         {/* Right: Stats + Wallet */}
@@ -163,22 +149,6 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
             <div className="text-xs text-gray-500 uppercase tracking-wider">Runtime</div>
             <div className="text-lg font-mono font-bold text-white">{runtime}</div>
           </div>
-
-          <div className="w-px h-10 bg-white/10" />
-
-          {/* Wallet */}
-          <button
-            onClick={copyWallet}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-poly-dark/50 border border-poly-border hover:border-poly-purple/50 transition-all group"
-          >
-            <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-400 to-blue-400" />
-            <span className="font-mono text-sm text-gray-300 group-hover:text-white transition-colors">
-              {shortWallet}
-            </span>
-            <span className="text-gray-500 group-hover:text-gray-300 transition-colors">
-              {copied ? '✓' : '📋'}
-            </span>
-          </button>
         </div>
       </div>
     </header>

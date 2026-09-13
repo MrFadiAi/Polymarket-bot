@@ -1,6 +1,7 @@
 export { Header } from './Header';
 export { BalanceCards } from './BalanceCards';
 export { PnLPanel } from './PnLPanel';
+export { RiskPanel } from './RiskPanel';
 export { TrendIndicators } from './TrendIndicators';
 export { StrategyGrid } from './StrategyGrid';
 export { OnChainStats } from './OnChainStats';

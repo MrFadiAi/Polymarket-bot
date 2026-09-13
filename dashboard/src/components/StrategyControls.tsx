@@ -5,6 +5,7 @@ interface StrategyControlsProps {
     onToggle: (strategy: string, enabled: boolean) => void;
     onEmergencyStop: () => void;
     onPanicSell: () => void;
+    halted?: boolean;
 }
 
 interface ToggleProps {
@@ -38,7 +39,7 @@ function Toggle({ label, enabled, icon, color, onChange }: ToggleProps) {
     );
 }
 
-export function StrategyControls({ config, onToggle, onEmergencyStop, onPanicSell }: StrategyControlsProps) {
+export function StrategyControls({ config, onToggle, onEmergencyStop, onPanicSell, halted }: StrategyControlsProps) {
     if (!config) return null;
 
     const strategies = [
@@ -96,13 +97,15 @@ export function StrategyControls({ config, onToggle, onEmergencyStop, onPanicSel
                 <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-white/5">
                     <button
                         onClick={onEmergencyStop}
-                        className="text-xs py-2 rounded-lg bg-red-600/10 border border-red-600/40 text-red-300 hover:bg-red-600/20 transition-colors"
+                        disabled={halted}
+                        className="text-xs py-2 rounded-lg bg-red-600/10 border border-red-600/40 text-red-300 hover:bg-red-600/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                        🛑 Emergency Stop
+                        {halted ? '🛑 Halted' : '🛑 Emergency Stop'}
                     </button>
                     <button
                         onClick={onPanicSell}
-                        className="text-xs py-2 rounded-lg bg-orange-600/10 border border-orange-600/40 text-orange-300 hover:bg-orange-600/20 transition-colors"
+                        disabled={halted}
+                        className="text-xs py-2 rounded-lg bg-orange-600/10 border border-orange-600/40 text-orange-300 hover:bg-orange-600/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                         🚨 Panic Sell
                     </button>

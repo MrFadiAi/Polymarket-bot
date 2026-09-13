@@ -13,6 +13,9 @@ export function QuickStats({ state, config }: QuickStatsProps) {
 
   const dailyPnL = state?.dailyPnL ?? 0;
   const trades = state?.tradesExecuted ?? 0;
+  const wins = state?.wins ?? 0;
+  const losses = state?.losses ?? 0;
+  const closed = wins + losses;
   const activeStrategies = [
     config?.smartMoney?.enabled,
     config?.arbitrage?.enabled,
@@ -20,7 +23,9 @@ export function QuickStats({ state, config }: QuickStatsProps) {
     config?.directTrading?.enabled,
   ].filter(Boolean).length;
 
-  const winRate = trades > 0 ? Math.min(100, Math.max(0, 50 + (realizedPnL / (trades * 2)))) : 0;
+  // Real win rate from closed trades (backend counters) — previously this
+  // was a fabricated heuristic, which is unacceptable on a trading dashboard
+  const winRate = closed > 0 ? (wins / closed) * 100 : 0;
 
   const formatPnL = (value: number) => {
     const formatted = Math.abs(value).toLocaleString(undefined, {
@@ -74,7 +79,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           <div>
             <div className="text-xs text-gray-500 uppercase tracking-wider">Win Rate</div>
             <div className="text-lg font-bold font-mono text-purple-400">
-              {winRate.toFixed(0)}%
+              {closed > 0 ? `${winRate.toFixed(0)}%` : '—'}
             </div>
           </div>
         </div>

@@ -131,7 +131,6 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
                                                             </div>
                                                         </td>
                                                         <td className="py-4 text-center">
-                                                            <td className="py-4 text-center">
                                                                 {pos.marketClosed ? (
                                                                     pos.isWinner ? (
                                                                         <button
@@ -153,7 +152,6 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
                                                                         {isClosing ? 'Closing...' : 'Close'}
                                                                     </button>
                                                                 )}
-                                                            </td>
                                                         </td>
                                                     </tr>
                                                 );

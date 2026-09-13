@@ -213,7 +213,7 @@ The dashboard is your command center with **enhanced risk monitoring**.
 - **PnL Panel**: Tracks your Profit and Loss per session.
 
 ### Risk Status
-The bot enforces its risk limits internally (daily / monthly / drawdown / total-loss / loss-streak / exposure cap) and broadcasts the risk state — monthly PnL, current drawdown, peak capital, halt flag, streaks and open exposure — to the dashboard and terminal status line. A dedicated visual Risk Status panel is on the roadmap.
+The bot enforces its risk limits internally (daily / monthly / drawdown / total-loss / loss-streak / exposure cap) and the **Risk Status panel** visualizes them live: loss-limit usage meters, drawdown from peak, open exposure vs cap, win/loss streaks, and a HALTED/PAUSED state badge.
 
 ### Quick Actions
 - **Strategy Toggles**: Enable/disable strategies in real-time
