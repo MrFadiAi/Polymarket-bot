@@ -9,9 +9,24 @@ interface PnLPanelProps {
 }
 
 const MAX_PNL_HISTORY = 30;
+const PNL_HISTORY_KEY = 'pnl-sparkline-history';
+
+function loadPersistedHistory(): number[] {
+  try {
+    const raw = localStorage.getItem(PNL_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(Number.isFinite).slice(-MAX_PNL_HISTORY) as number[];
+  } catch {
+    return [];
+  }
+}
 
 export function PnLPanel({ state, config }: PnLPanelProps) {
-  const [pnlHistory, setPnlHistory] = useState<number[]>([]);
+  // Persisted to localStorage so navigating to History/Positions (which
+  // unmounts this panel) no longer wipes the sparkline
+  const [pnlHistory, setPnlHistory] = useState<number[]>(loadPersistedHistory);
 
   const daily = state?.dailyPnL ?? 0;
   const realized = state?.totalPnL ?? 0;
@@ -25,8 +40,12 @@ export function PnLPanel({ state, config }: PnLPanelProps) {
   // Track P&L history for sparkline
   useEffect(() => {
     setPnlHistory(prev => {
-      const newHistory = [...prev, total];
-      return newHistory.slice(-MAX_PNL_HISTORY);
+      if (prev.length > 0 && prev[prev.length - 1] === total) return prev;
+      const newHistory = [...prev, total].slice(-MAX_PNL_HISTORY);
+      try {
+        localStorage.setItem(PNL_HISTORY_KEY, JSON.stringify(newHistory));
+      } catch { /* storage unavailable (private mode) — in-memory only */ }
+      return newHistory;
     });
   }, [total]);
 

@@ -16,18 +16,37 @@ interface ToggleProps {
     onChange: (enabled: boolean) => void;
 }
 
+// Static Tailwind class maps — interpolated bg-${color}-500 strings are
+// invisible to the JIT compiler and only worked by coincidence
+const CHIP_BG: Record<string, string> = {
+    purple: 'bg-purple-500/20',
+    blue: 'bg-blue-500/20',
+    green: 'bg-green-500/20',
+    yellow: 'bg-yellow-500/20',
+};
+
+const TRACK_ON: Record<string, string> = {
+    purple: 'bg-purple-500',
+    blue: 'bg-blue-500',
+    green: 'bg-green-500',
+    yellow: 'bg-yellow-500',
+};
+
 function Toggle({ label, enabled, icon, color, onChange }: ToggleProps) {
     return (
         <div className="flex items-center justify-between p-3 rounded-xl bg-poly-dark/50 border border-white/5">
             <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-lg bg-${color}-500/20 flex items-center justify-center text-sm`}>
+                <div className={`w-8 h-8 rounded-lg ${CHIP_BG[color] ?? 'bg-gray-500/20'} flex items-center justify-center text-sm`}>
                     {icon}
                 </div>
                 <span className="text-white font-medium">{label}</span>
             </div>
             <button
+                role="switch"
+                aria-checked={enabled}
+                aria-label={`${label} strategy`}
                 onClick={() => onChange(!enabled)}
-                className={`relative w-12 h-6 rounded-full transition-all duration-300 ${enabled ? `bg-${color}-500` : 'bg-gray-700'
+                className={`relative w-12 h-6 rounded-full transition-all duration-300 ${enabled ? TRACK_ON[color] ?? 'bg-green-500' : 'bg-gray-700'
                     }`}
             >
                 <div

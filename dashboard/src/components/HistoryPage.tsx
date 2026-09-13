@@ -13,6 +13,15 @@ function apiQueryString(): string {
   return token ? `?token=${encodeURIComponent(token)}` : '';
 }
 
+// Static Tailwind class map — interpolated bg-${color}-400 strings are
+// invisible to the JIT compiler and only worked by coincidence
+const DOT_BG: Record<string, string> = {
+  purple: 'bg-purple-400',
+  blue: 'bg-blue-400',
+  green: 'bg-green-400',
+  yellow: 'bg-yellow-400',
+};
+
 export function HistoryPage({ onBack }: HistoryPageProps) {
   const [history, setHistory] = useState<HistoryData | null>(null);
   const [selectedSession, setSelectedSession] = useState<SessionSummary | null>(null);
@@ -244,7 +253,7 @@ export function HistoryPage({ onBack }: HistoryPageProps) {
                     return (
                       <div key={strategy.key} className={`flex items-center justify-between p-3 rounded-xl bg-poly-dark/50 ${!strategy.enabled ? 'opacity-50' : ''}`}>
                         <div className="flex items-center gap-3">
-                          <div className={`w-3 h-3 rounded-full bg-${strategy.color}-400`} />
+                          <div className={`w-3 h-3 rounded-full ${DOT_BG[strategy.color] ?? 'bg-gray-400'}`} />
                           <span className="text-white">{strategy.name}</span>
                           {!strategy.enabled && <span className="badge bg-gray-500/20 text-gray-500 text-xs">OFF</span>}
                         </div>

@@ -37,7 +37,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
 
   return (
     <div className="glass-card rounded-2xl p-1">
-      <div className="flex items-center justify-between gap-2 px-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 items-center gap-2 px-2">
         {/* Total P&L */}
         <div className="flex items-center gap-3 px-4 py-3">
           <div className={`icon-circle-sm ${totalPnL >= 0 ? 'bg-green-500/20' : 'bg-red-500/20'}`}>
@@ -56,7 +56,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           </div>
         </div>
 
-        <div className="w-px h-10 bg-white/10" />
+        <div className="hidden xl:block w-px h-10 bg-white/10 justify-self-center" />
 
         {/* Daily P&L */}
         <div className="flex items-center gap-3 px-4 py-3">
@@ -71,7 +71,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           </div>
         </div>
 
-        <div className="w-px h-10 bg-white/10" />
+        <div className="hidden xl:block w-px h-10 bg-white/10 justify-self-center" />
 
         {/* Win Rate */}
         <div className="flex items-center gap-3 px-4 py-3">
@@ -84,7 +84,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           </div>
         </div>
 
-        <div className="w-px h-10 bg-white/10" />
+        <div className="hidden xl:block w-px h-10 bg-white/10 justify-self-center" />
 
         {/* Total Trades */}
         <div className="flex items-center gap-3 px-4 py-3">
@@ -95,7 +95,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           </div>
         </div>
 
-        <div className="w-px h-10 bg-white/10" />
+        <div className="hidden xl:block w-px h-10 bg-white/10 justify-self-center" />
 
         {/* Active Strategies */}
         <div className="flex items-center gap-3 px-4 py-3">
@@ -108,7 +108,7 @@ export function QuickStats({ state, config }: QuickStatsProps) {
           </div>
         </div>
 
-        <div className="w-px h-10 bg-white/10" />
+        <div className="hidden xl:block w-px h-10 bg-white/10 justify-self-center" />
 
         {/* Opportunities */}
         <div className="flex items-center gap-3 px-4 py-3">

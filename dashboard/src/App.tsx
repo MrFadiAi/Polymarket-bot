@@ -11,6 +11,7 @@ import {
   ActivityLog,
   ConfigPanel,
   ConnectionStatus,
+  ConfirmModal,
   DipArbPanel,
   ArbitragePanel,
   SmartMoneyPanel,
@@ -19,6 +20,7 @@ import {
   HistoryPage,
   PositionsPage,
   StrategyControls,
+  type ConfirmConfig,
 } from './components';
 
 type Page = 'dashboard' | 'history' | 'positions';
@@ -28,6 +30,11 @@ function App() {
   const { state, config, logs, connected, error, commandError, sendCommand } = useWebSocket();
   const isDryRun = config?.dryRun ?? true;
   const isHalted = state?.permanentlyHalted ?? false;
+
+  // Promise-based confirmation dialog (replaces window.confirm)
+  const [confirmState, setConfirmState] = useState<(ConfirmConfig & { resolve: (v: boolean) => void }) | null>(null);
+  const confirmDialog = (cfg: ConfirmConfig) =>
+    new Promise<boolean>((resolve) => setConfirmState({ ...cfg, resolve }));
 
   const handleClosePosition = (tokenId: string, size: number) => {
     sendCommand('closePosition', { tokenId, size });
@@ -43,23 +50,39 @@ function App() {
 
   // Backend semantics (v3.2): payload.enabled is the TARGET dryRun state,
   // so toggling sends !isDryRun (true = stay/go dry-run, false = go LIVE).
-  const handleToggleDryRun = () => {
+  const handleToggleDryRun = async () => {
     if (isDryRun) {
-      const confirmed = window.confirm('⚠️ WARNING: You are switching to LIVE trading mode.\n\nReal funds will be used. Ensure you have loaded your Private Key and understand the risks.\n\nContinue?');
+      const confirmed = await confirmDialog({
+        title: 'Switch to LIVE trading?',
+        message: 'Real funds will be used. Ensure you have loaded your Private Key and understand the risks.',
+        confirmLabel: 'Go LIVE',
+        danger: true,
+      });
       if (!confirmed) return;
     }
     sendCommand('toggleDryRun', { enabled: !isDryRun });
   };
 
-  const handleEmergencyStop = () => {
-    if (window.confirm('🛑 EMERGENCY STOP?\n\nHalts all strategies immediately. Restart the bot to resume.')) {
+  const handleEmergencyStop = async () => {
+    const confirmed = await confirmDialog({
+      title: 'Emergency Stop',
+      message: 'Halts all strategies immediately. The bot stays halted until you restart it.',
+      confirmLabel: '🛑 Halt everything',
+      danger: true,
+    });
+    if (confirmed) {
       sendCommand('emergencyStop', {});
     }
   };
 
-  const handlePanicSell = () => {
-    if (!window.confirm('🚨 PANIC SELL?\n\nThis closes up to 10 open positions at market price.')) return;
-    if (window.confirm('Last confirmation: real market orders will be placed. Continue?')) {
+  const handlePanicSell = async () => {
+    const confirmed = await confirmDialog({
+      title: 'Panic Sell',
+      message: 'This closes up to 10 open positions at market price. Real orders will be placed immediately — this cannot be undone.',
+      confirmLabel: '🚨 Sell everything',
+      danger: true,
+    });
+    if (confirmed) {
       sendCommand('panicSell', {});
     }
   };
@@ -182,6 +205,17 @@ function App() {
           </div>
         </div>
       </footer>
+
+      {/* Confirmation dialog */}
+      {confirmState && (
+        <ConfirmModal
+          config={confirmState}
+          onResolve={(confirmed) => {
+            confirmState.resolve(confirmed);
+            setConfirmState(null);
+          }}
+        />
+      )}
     </div>
   );
 }

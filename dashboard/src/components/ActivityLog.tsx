@@ -83,6 +83,7 @@ export function ActivityLog({ logs }: ActivityLogProps) {
             <button
               key={opt}
               onClick={() => setFilter(opt)}
+              aria-pressed={filter === opt}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 filter === opt
                   ? 'bg-gradient-to-r from-poly-purple to-poly-blue text-white shadow-glow-purple'
@@ -108,8 +109,17 @@ export function ActivityLog({ logs }: ActivityLogProps) {
             return (
               <div
                 key={log.id}
-                className={`px-4 py-3 rounded-xl border ${style.bg} ${style.border} cursor-pointer transition-all hover:border-white/20`}
+                role="button"
+                tabIndex={0}
+                aria-expanded={expanded === log.id}
+                className={`px-4 py-3 rounded-xl border ${style.bg} ${style.border} cursor-pointer transition-all hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-poly-purple/50`}
                 onClick={() => setExpanded(expanded === log.id ? null : log.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setExpanded(expanded === log.id ? null : log.id);
+                  }
+                }}
               >
                 <div className="flex items-start gap-3">
                   <span className="text-base flex-shrink-0">{LOG_ICONS[log.level]}</span>
